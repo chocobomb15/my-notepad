@@ -4,6 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Notepad</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged }
@@ -13,7 +14,7 @@ import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc, query, order
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  🔑 비밀번호 설정
-const PASSWORD = "asdqwe!";
+const PASSWORD = "1234";
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const firebaseConfig = {
@@ -60,13 +61,13 @@ async function loadData(){
     getDocs(query(foldersCol(),orderBy("createdAt"))),
     getDocs(query(filesCol(),  orderBy("createdAt")))
   ]);
-  state.folders=fSnap.docs.map(d=>d.data());
-  state.files  =fileSnap.docs.map(d=>d.data());
+  state.folders=fSnap.docs.map(d=>d.data()).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
+  state.files  =fileSnap.docs.map(d=>d.data()).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
   if(state.folders.length===0){
-    const f1  ={id:genId(),name:"개인",color:COLORS[0],createdAt:Date.now()};
-    const f2  ={id:genId(),name:"업무",color:COLORS[1],createdAt:Date.now()+1};
-    const fil1={id:genId(),folderId:f1.id,name:"일기.md",    content:"오늘의 일기를 작성해보세요...",createdAt:Date.now()};
-    const fil2={id:genId(),folderId:f2.id,name:"할일목록.md",content:"할일 목록을 작성해보세요.",createdAt:Date.now()+1};
+    const f1  ={id:genId(),name:"개인",color:COLORS[0],createdAt:Date.now(),order:0};
+    const f2  ={id:genId(),name:"업무",color:COLORS[1],createdAt:Date.now()+1,order:1};
+    const fil1={id:genId(),folderId:f1.id,name:"일기.md",    content:"오늘의 일기를 작성해보세요...",createdAt:Date.now(),order:0};
+    const fil2={id:genId(),folderId:f2.id,name:"할일목록.md",content:"할일 목록을 작성해보세요.",createdAt:Date.now()+1,order:0};
     await Promise.all([saveFolder(f1),saveFolder(f2),saveFile(fil1),saveFile(fil2)]);
     state.folders=[f1,f2]; state.files=[fil1,fil2];
     state.openFolderIds=[f1.id]; state.tabs=[{fileId:fil1.id,folderId:f1.id}]; state.activeTab=fil1.id;
@@ -74,11 +75,17 @@ async function loadData(){
   render();
 }
 
+async function refreshData(){
+  const btn=document.getElementById("refreshBtn");
+  if(btn){btn.style.opacity="0.4";btn.style.pointerEvents="none";}
+  await loadData();
+}
+
 // ─── Auth ─────────────────────────────────
 async function tryLogin(){
   if(state.pwInput===PASSWORD){
     state.pwError=false;
-    localStorage.setItem('notepad_authed','1');
+    localStorage.setItem("notepad_authed","1");
     if(!state.firebaseReady){await signInAnonymously(auth);}
     else{state.authed=true;await loadData();}
   } else {
@@ -88,28 +95,19 @@ async function tryLogin(){
 }
 onAuthStateChanged(auth,async(user)=>{
   state.firebaseReady=!!user;
-  const remembered=localStorage.getItem('notepad_authed')==='1';
-  if(user&&(state.pwInput===PASSWORD||remembered)){
-    state.authed=true;await loadData();
-  }
+  const remembered=localStorage.getItem("notepad_authed")==="1";
+  if(user&&(state.pwInput===PASSWORD||remembered)){state.authed=true;await loadData();}
 });
-async function refreshData(){
-  const btn=document.getElementById('refreshBtn');
-  if(btn){btn.style.opacity='0.4';btn.style.pointerEvents='none';}
-  await loadData();
-}
 
 // ─── Content helpers ──────────────────────
-// 기존 plain text → editor용 HTML 변환
 function textToHTML(content){
   if(isHTML(content)) return content;
   return content
     .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
     .split("\n").map(line=>`<div>${line||"<br>"}</div>`).join("");
 }
-function isHTML(s){ return /<(strong|em|b|i|s|del|div|br|p)\b/i.test(s); }
+function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p)\b/i.test(s);}
 
-// HTML → Markdown 텍스트 변환 (내보내기용)
 function htmlToMarkdown(html){
   let md=html;
   md=md.replace(/<strong>([\s\S]*?)<\/strong>/gi,"**$1**");
@@ -130,8 +128,6 @@ function htmlToMarkdown(html){
   md=md.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&nbsp;/g," ");
   return md.replace(/\n{3,}/g,"\n\n").replace(/^\n+/,"").trim();
 }
-
-// HTML → 순수 plain text (내보내기용)
 function htmlToText(html){
   let txt=htmlToMarkdown(html);
   txt=txt.replace(/\*\*([\s\S]*?)\*\*/g,"$1");
@@ -139,14 +135,12 @@ function htmlToText(html){
   txt=txt.replace(/~~([\s\S]*?)~~/g,"$1");
   return txt;
 }
-
-// 현재 에디터에서 innerHTML 가져오기
 function getEditorContent(){
   const ed=document.getElementById("editor");
-  return ed ? ed.innerHTML : "";
+  return ed?ed.innerHTML:"";
 }
 
-// ─── Text change (partial DOM update, preserves undo) ─────────────
+// ─── Text change ──────────────────────────
 function handleTextChange(){
   const content=getEditorContent();
   state.files=state.files.map(f=>f.id===state.activeTab?{...f,content}:f);
@@ -162,100 +156,74 @@ function handleTextChange(){
   },700);
 }
 
-// ─── Formatting (execCommand → native undo 스택에 포함됨) ─────────
+// ─── Formatting ───────────────────────────
 function applyFormat(type){
   const ed=document.getElementById("editor"); if(!ed) return;
   ed.focus();
-  const cmd=type==="bold"?"bold":type==="italic"?"italic":"strikeThrough";
-  document.execCommand(cmd,false,null);
+  document.execCommand(type==="bold"?"bold":type==="italic"?"italic":"strikeThrough",false,null);
   handleTextChange();
 }
-
-// ─── Insert date ──────────────────────────
 function insertDateTime(){
   const ed=document.getElementById("editor"); if(!ed) return;
   ed.focus();
   const now=new Date();
-  const dt=`${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR")}`;
-  document.execCommand("insertText",false,dt);
+  document.execCommand("insertText",false,`${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR")}`);
   handleTextChange();
 }
 
 // ─── Export ───────────────────────────────
 function exportFile(format){
   const file=state.files.find(f=>f.id===state.activeTab); if(!file) return;
-  const baseName=file.name.replace(/\.[^/.]+$/,"");
-  let content, ext;
-  if(format==="md")  { content=htmlToMarkdown(file.content); ext=".md"; }
-  else               { content=htmlToText(file.content);     ext=".txt"; }
+  const base=file.name.replace(/\.[^/.]+$/,"");
+  const content=format==="md"?htmlToMarkdown(file.content):htmlToText(file.content);
   const blob=new Blob([content],{type:"text/plain;charset=utf-8"});
   const url=URL.createObjectURL(blob);
-  const a=document.createElement("a"); a.href=url; a.download=baseName+ext; a.click();
+  const a=document.createElement("a"); a.href=url; a.download=base+(format==="md"?".md":".txt"); a.click();
   URL.revokeObjectURL(url);
 }
-
-// ─── Convert .txt → .md ───────────────────
 async function convertToMd(fileId){
   const file=state.files.find(f=>f.id===fileId); if(!file) return;
-  const newName=file.name.replace(/\.txt$/i,".md");
-  state.files=state.files.map(f=>f.id===fileId?{...f,name:newName}:f);
-  await saveFile(state.files.find(f=>f.id===fileId));
-  render();
+  state.files=state.files.map(f=>f.id===fileId?{...f,name:f.name.replace(/\.txt$/i,".md")}:f);
+  await saveFile(state.files.find(f=>f.id===fileId)); render();
 }
 
 // ─── Find / Replace ───────────────────────
 function handleFind(){
-  const file=state.files.find(f=>f.id===state.activeTab);
-  if(!file||!state.findText) return;
+  const file=state.files.find(f=>f.id===state.activeTab); if(!file||!state.findText) return;
   const ed=document.getElementById("editor"); if(!ed) return;
-  const text=ed.innerText;
-  const idx=text.indexOf(state.findText);
-  if(idx===-1) return;
-  // 텍스트 노드에서 찾아 선택
+  const idx=ed.innerText.indexOf(state.findText); if(idx===-1) return;
   const range=document.createRange(), sel=window.getSelection();
   let charCount=0, found=false;
   function walk(node){
     if(found) return;
     if(node.nodeType===3){
       const end=charCount+node.length;
-      if(!found && charCount<=idx && idx<end){
-        range.setStart(node,idx-charCount);
-        range.setEnd(node,Math.min(idx-charCount+state.findText.length, node.length));
-        found=true;
-      }
+      if(charCount<=idx&&idx<end){range.setStart(node,idx-charCount);range.setEnd(node,Math.min(idx-charCount+state.findText.length,node.length));found=true;}
       charCount+=node.length;
-    } else { node.childNodes.forEach(walk); }
+    } else node.childNodes.forEach(walk);
   }
   walk(ed);
-  if(found){ sel.removeAllRanges(); sel.addRange(range); ed.focus(); }
+  if(found){sel.removeAllRanges();sel.addRange(range);ed.focus();}
 }
-
 async function handleReplace(){
-  const file=state.files.find(f=>f.id===state.activeTab);
-  if(!file||!state.findText) return;
-  const md=htmlToMarkdown(file.content);
-  const newMd=md.replaceAll(state.findText,state.replaceText);
-  const newHTML=textToHTML(newMd);
+  const file=state.files.find(f=>f.id===state.activeTab); if(!file||!state.findText) return;
+  const newHTML=textToHTML(htmlToMarkdown(file.content).replaceAll(state.findText,state.replaceText));
   state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:newHTML}:f);
-  const ed=document.getElementById("editor");
-  if(ed) ed.innerHTML=newHTML;
-  await saveFile({...file,content:newHTML});
-  updateStatusBar();
+  const ed=document.getElementById("editor"); if(ed) ed.innerHTML=newHTML;
+  await saveFile({...file,content:newHTML}); updateStatusBar();
 }
 
 // ─── Folder / File actions ────────────────
 function toggleFolder(folderId){
   const isOpen=state.openFolderIds.includes(folderId);
   if(isOpen){
-    // 접기: 해당 폴더 탭 모두 닫기
     state.openFolderIds=state.openFolderIds.filter(id=>id!==folderId);
-    const folderFileIds=state.files.filter(f=>f.folderId===folderId).map(f=>f.id);
-    state.tabs=state.tabs.filter(t=>!folderFileIds.includes(t.fileId));
-    if(folderFileIds.includes(state.activeTab)) state.activeTab=state.tabs.length>0?state.tabs[state.tabs.length-1].fileId:null;
+    const ids=state.files.filter(f=>f.folderId===folderId).map(f=>f.id);
+    state.tabs=state.tabs.filter(t=>!ids.includes(t.fileId));
+    if(ids.includes(state.activeTab)) state.activeTab=state.tabs.length>0?state.tabs[state.tabs.length-1].fileId:null;
   } else {
-    // 펼치기: 다른 폴더 탭 모두 닫고 이 폴더 탭만 열기
-    const otherFileIds=state.files.filter(f=>f.folderId!==folderId).map(f=>f.id);
-    state.tabs=state.tabs.filter(t=>!otherFileIds.includes(t.fileId));
+    const otherIds=state.files.filter(f=>f.folderId!==folderId).map(f=>f.id);
+    state.tabs=state.tabs.filter(t=>!otherIds.includes(t.fileId));
     state.openFolderIds=[folderId];
     const ff=state.files.filter(f=>f.folderId===folderId);
     const newTabs=ff.filter(f=>!state.tabs.find(t=>t.fileId===f.id)).map(f=>({fileId:f.id,folderId}));
@@ -274,15 +242,17 @@ function closeTab(fileId){
   render();
 }
 async function newFile(folderId){
-  const f={id:genId(),folderId,name:"새 파일.md",content:"",createdAt:Date.now()};
+  const folderFiles=state.files.filter(f=>f.folderId===folderId);
+  const maxOrder=folderFiles.reduce((m,f)=>Math.max(m,f.order??0),0);
+  const f={id:genId(),folderId,name:"새 파일.md",content:"",createdAt:Date.now(),order:maxOrder+1};
   state.files=[...state.files,f]; state.tabs=[...state.tabs,{fileId:f.id,folderId}];
   state.activeTab=f.id; state.renamingId=f.id; state.renamingVal="새 파일.md";
   await saveFile(f); render();
 }
 async function newFolder(){
-  const name=state.newFolderName.trim();
-  if(!name){state.newFolderMode=false;state.newFolderName="";render();return;}
-  const f={id:genId(),name,color:COLORS[state.folders.length%COLORS.length],createdAt:Date.now()};
+  const name=state.newFolderName.trim(); if(!name){state.newFolderMode=false;state.newFolderName="";render();return;}
+  const maxOrder=state.folders.reduce((m,f)=>Math.max(m,f.order??0),0);
+  const f={id:genId(),name,color:COLORS[state.folders.length%COLORS.length],createdAt:Date.now(),order:maxOrder+1};
   state.folders=[...state.folders,f]; state.newFolderMode=false; state.newFolderName="";
   await saveFolder(f); render();
 }
@@ -304,6 +274,55 @@ async function deleteFolder(folderId){
   await Promise.all([...ids.map(id=>delFile(id)),delFolder(folderId)]); render();
 }
 
+// ─── Drag-and-drop (SortableJS) ───────────
+function initSortables(){
+  // 폴더 순서 변경
+  const folderList=document.getElementById("folderList");
+  if(folderList&&window.Sortable){
+    Sortable.create(folderList,{
+      animation:150, handle:".folder-row",
+      onEnd:async(evt)=>{
+        const moved=state.folders.splice(evt.oldIndex,1)[0];
+        state.folders.splice(evt.newIndex,0,moved);
+        state.folders=state.folders.map((f,i)=>({...f,order:i}));
+        await Promise.all(state.folders.map(f=>saveFolder(f)));
+      }
+    });
+  }
+
+  // 파일 순서 변경 (폴더별)
+  state.folders.forEach(folder=>{
+    const fileList=document.getElementById(`fileList-${folder.id}`);
+    if(fileList&&window.Sortable){
+      Sortable.create(fileList,{
+        animation:150, handle:".file-row",
+        onEnd:async(evt)=>{
+          const folderFiles=state.files.filter(f=>f.folderId===folder.id);
+          const moved=folderFiles.splice(evt.oldIndex,1)[0];
+          folderFiles.splice(evt.newIndex,0,moved);
+          const updated=folderFiles.map((f,i)=>({...f,order:i}));
+          state.files=state.files.map(f=>updated.find(u=>u.id===f.id)||f);
+          await Promise.all(updated.map(f=>saveFile(f)));
+        }
+      });
+    }
+  });
+
+  // 탭 순서 변경
+  const tabBar=document.getElementById("tabBar");
+  if(tabBar&&window.Sortable){
+    Sortable.create(tabBar,{
+      animation:150,
+      filter:".tab-close-btn",
+      onEnd:(evt)=>{
+        const moved=state.tabs.splice(evt.oldIndex,1)[0];
+        state.tabs.splice(evt.newIndex,0,moved);
+        render();
+      }
+    });
+  }
+}
+
 // ─── Theme & CSS ──────────────────────────
 function T(){return state.dark
   ?{bg:"#0f1117",sb:"#161b22",tab:"#1c2128",tabA:"#0f1117",bd:"#30363d",tx:"#e6edf3",mt:"#8b949e",ac:"#58a6ff",hv:"#21262d",inp:"#161b22",toolbar:"#161b22"}
@@ -312,17 +331,16 @@ function esc(s=""){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").r
 const btnC =t=>`background:none;border:1px solid ${t.bd};border-radius:5px;cursor:pointer;color:${t.tx};padding:3px 8px;font-size:13px;font-family:inherit;`;
 const inpC =t=>`background:${t.inp};border:1px solid ${t.bd};border-radius:4px;color:${t.tx};padding:3px 8px;font-size:11px;font-family:inherit;outline:none;`;
 const actC =t=>`background:${t.ac}22;border:1px solid ${t.ac}44;border-radius:4px;cursor:pointer;color:${t.ac};padding:3px 10px;font-size:11px;font-family:inherit;`;
-const fmtC =t=>`background:none;border:1px solid ${t.bd};border-radius:4px;cursor:pointer;color:${t.mt};padding:2px 9px;font-size:12px;font-family:inherit;min-width:28px;transition:all 0.1s;`;
+const fmtC =t=>`background:none;border:1px solid ${t.bd};border-radius:4px;cursor:pointer;color:${t.mt};padding:2px 9px;font-size:12px;font-family:inherit;min-width:28px;`;
 const cvtC =t=>`background:${t.ac}18;border:1px solid ${t.ac}55;border-radius:4px;cursor:pointer;color:${t.ac};padding:2px 9px;font-size:11px;font-family:inherit;`;
+const dragHandle=`<span class="drag-handle" style="cursor:grab;color:#8b949e;font-size:10px;padding:0 2px;user-select:none;" title="드래그해서 순서 변경">⠿</span>`;
 
 function updateStatusBar(){
   const file=state.files.find(f=>f.id===state.activeTab);
-  const t=T(), sb=document.getElementById("statusbar");
-  if(!sb) return;
-  const charCount=file ? htmlToText(file.content).length : 0;
-  const lineCount=file ? htmlToText(file.content).split("\n").length : 0;
+  const t=T(), sb=document.getElementById("statusbar"); if(!sb) return;
+  const txt=file?htmlToText(file.content):"";
   sb.innerHTML=file
-    ?`<span>${esc(file.name)}</span><span>줄: ${lineCount}</span><span>글자: ${charCount}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
+    ?`<span>${esc(file.name)}</span><span>줄: ${txt.split("\n").length}</span><span>글자: ${txt.length}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
     :`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`;
 }
 
@@ -331,7 +349,6 @@ function render(){
   const t=T();
   document.body.style.cssText=`margin:0;padding:0;background:${t.bg};color:${t.tx};font-family:'JetBrains Mono','Fira Code',Consolas,monospace;overflow:hidden;height:100vh;`;
 
-  // ── Login ──────────────────────────────
   if(!state.authed){
     document.body.innerHTML=`
     <div style="height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;">
@@ -346,8 +363,7 @@ function render(){
         <button onclick="window._pwLogin()" style="background:${t.ac};color:#fff;border:none;padding:10px;border-radius:6px;font-size:14px;cursor:pointer;font-family:inherit;font-weight:600;">입장</button>
       </div>
     </div>`;
-    window._pwi=(v)=>{state.pwInput=v;};
-    window._pwLogin=tryLogin;
+    window._pwi=(v)=>{state.pwInput=v;}; window._pwLogin=tryLogin;
     setTimeout(()=>document.getElementById("pwInput")?.focus(),50);
     return;
   }
@@ -355,25 +371,24 @@ function render(){
   const activeFile=state.files.find(f=>f.id===state.activeTab);
   const tabFiles  =state.tabs.map(tab=>state.files.find(f=>f.id===tab.fileId)).filter(Boolean);
   const isTxt     =activeFile?.name.toLowerCase().endsWith(".txt");
-  const charCount =activeFile ? htmlToText(activeFile.content).length : 0;
-  const lineCount =activeFile ? htmlToText(activeFile.content).split("\n").length : 0;
+  const txt       =activeFile?htmlToText(activeFile.content):"";
 
   document.body.innerHTML=`
   <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden;">
 
     <!-- Header -->
     <div style="display:flex;align-items:center;height:44px;background:${t.sb};border-bottom:1px solid ${t.bd};padding:0 12px;gap:8px;flex-shrink:0;">
-      <button onclick="window._btn('sidebar')" title="탐색기 접기/펼치기" style="${btnC(t)};padding:3px 7px;">${state.sidebarOpen?"◀":"▶"}</button>
+      <button onclick="window._btn('sidebar')" style="${btnC(t)};padding:3px 7px;">${state.sidebarOpen?"◀":"▶"}</button>
       <span style="font-size:15px;font-weight:700;letter-spacing:2px;color:${t.ac};">✎ NOTEPAD</span>
       <div style="flex:1"></div>
       <button onclick="window._btn('find')" title="찾기/바꾸기 (Ctrl+H)" style="${btnC(t)}">🔍</button>
-      <button onclick="window._btn('wrap')" title="줄 바꿈" style="${btnC(t)};background:${state.wordWrap?t.ac:"transparent"};color:${state.wordWrap?"#fff":t.mt};">↩</button>
+      <button onclick="window._btn('wrap')" style="${btnC(t)};background:${state.wordWrap?t.ac:"transparent"};color:${state.wordWrap?"#fff":t.mt};">↩</button>
       <button onclick="window._btn('zm-')" style="${btnC(t)}">－</button>
       <span style="font-size:11px;color:${t.mt};min-width:36px;text-align:center;">${state.zoom}%</span>
       <button onclick="window._btn('zm+')" style="${btnC(t)}">＋</button>
       <button onclick="window._btn('dark')" style="${btnC(t)}">${state.dark?"☀️":"🌙"}</button>
-      <button onclick="window._btn('lock')" title="잠금" style="${btnC(t)};color:${t.mt};">🔒</button>
       <button id="refreshBtn" onclick="window._refresh()" title="최신 데이터 불러오기" style="${btnC(t)};">🔄</button>
+      <button onclick="window._btn('lock')" title="잠금" style="${btnC(t)};color:${t.mt};">🔒</button>
       <span id="saveindicator" style="font-size:10px;min-width:52px;text-align:right;color:#34d399;opacity:0.9;">✓ 저장됨</span>
     </div>
 
@@ -387,32 +402,34 @@ function render(){
           <button onclick="window._btn('newfolder')" style="${btnC(t)};font-size:14px;padding:2px 7px;">+</button>
         </div>
         ${state.newFolderMode?`<div style="padding:4px 12px;"><input id="newFolderInput" value="${esc(state.newFolderName)}" placeholder="폴더 이름" oninput="window._nfi(this.value)" onkeydown="window._nfk(event)" onblur="window._btn('confirmfolder')" style="${inpC(t)};width:100%;box-sizing:border-box;"/></div>`:""}
-        <div style="flex:1;overflow-y:auto;">
+        <div id="folderList" style="flex:1;overflow-y:auto;">
           ${state.folders.map(folder=>{
             const isOpen=state.openFolderIds.includes(folder.id);
             const ff=state.files.filter(f=>f.folderId===folder.id);
             return`<div>
-              <div onclick="window._tf('${folder.id}')" oncontextmenu="window._cm(event,'folder','${folder.id}')"
-                style="display:flex;align-items:center;padding:6px 12px;cursor:pointer;gap:6px;border-radius:4px;margin:1px 6px;"
+              <div class="folder-row" onclick="window._tf('${folder.id}')" oncontextmenu="window._cm(event,'folder','${folder.id}')"
+                style="display:flex;align-items:center;padding:6px 8px 6px 12px;cursor:pointer;gap:4px;border-radius:4px;margin:1px 6px;"
                 onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
+                ${dragHandle}
                 <span style="font-size:10px;color:${t.mt};">${isOpen?"▾":"▸"}</span>
                 <span style="color:${folder.color};">📁</span>
                 <span style="font-size:12px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(folder.name)}</span>
                 <span style="font-size:10px;color:${t.mt};">${ff.length}</span>
                 <button onclick="event.stopPropagation();window._nf('${folder.id}')" style="${btnC(t)};font-size:11px;padding:1px 5px;">+</button>
               </div>
-              ${isOpen?ff.map(file=>`
-                <div onclick="window._of('${file.id}')" oncontextmenu="window._cm(event,'file','${file.id}')"
-                  style="display:flex;align-items:center;padding:4px 12px 4px 32px;cursor:pointer;gap:6px;border-radius:4px;margin:1px 6px;
+              ${isOpen?`<div id="fileList-${folder.id}">`+ff.map(file=>`
+                <div class="file-row" onclick="window._of('${file.id}')" oncontextmenu="window._cm(event,'file','${file.id}')"
+                  style="display:flex;align-items:center;padding:4px 8px 4px 28px;cursor:pointer;gap:4px;border-radius:4px;margin:1px 6px;
                     background:${state.activeTab===file.id?t.ac+"22":"transparent"};
                     border-left:${state.activeTab===file.id?`2px solid ${t.ac}`:"2px solid transparent"};"
                   onmouseenter="this.style.background='${state.activeTab===file.id?t.ac+"22":t.hv}'"
                   onmouseleave="this.style.background='${state.activeTab===file.id?t.ac+"22":"transparent"}'">
+                  ${dragHandle}
                   <span style="font-size:11px;">📄</span>
                   ${state.renamingId===file.id
                     ?`<input id="renameInput" value="${esc(state.renamingVal)}" onclick="event.stopPropagation()" oninput="window._ri(this.value)" onkeydown="window._rk(event,'${file.id}')" onblur="window._rc('${file.id}')" style="${inpC(t)};flex:1;font-size:11px;"/>`
                     :`<span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(file.name)}</span>`}
-                </div>`).join(""):""}
+                </div>`).join("")+`</div>`:""}
             </div>`;}).join("")}
         </div>
       </div>`:""}
@@ -421,19 +438,19 @@ function render(){
       <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;">
 
         <!-- Tabs -->
-        <div style="display:flex;background:${t.tab};border-bottom:1px solid ${t.bd};overflow-x:auto;flex-shrink:0;scrollbar-width:none;">
+        <div id="tabBar" style="display:flex;background:${t.tab};border-bottom:1px solid ${t.bd};overflow-x:auto;flex-shrink:0;scrollbar-width:none;">
           ${tabFiles.length===0
             ?`<div style="padding:8px 16px;color:${t.mt};font-size:12px;">파일을 클릭해 여세요</div>`
             :tabFiles.map(file=>`
               <div onclick="window._at('${file.id}')"
-                style="display:flex;align-items:center;gap:6px;padding:8px 14px;cursor:pointer;white-space:nowrap;
+                style="display:flex;align-items:center;gap:6px;padding:8px 14px;cursor:grab;white-space:nowrap;
                   border-right:1px solid ${t.bd};
                   border-bottom:${state.activeTab===file.id?`2px solid ${t.ac}`:"2px solid transparent"};
                   background:${state.activeTab===file.id?t.tabA:"transparent"};
                   font-size:12px;color:${state.activeTab===file.id?t.tx:t.mt};">
                 <span style="font-size:10px;">📄</span>
                 <span ondblclick="window._startRename('${file.id}')">${esc(file.name)}</span>
-                <button onclick="event.stopPropagation();window._ct('${file.id}')"
+                <button class="tab-close-btn" onclick="event.stopPropagation();window._ct('${file.id}')"
                   style="background:none;border:none;cursor:pointer;color:${t.mt};font-size:12px;padding:0 2px;border-radius:2px;"
                   onmouseenter="this.style.color='#f87171'" onmouseleave="this.style.color='${t.mt}'">✕</button>
               </div>`).join("")}
@@ -446,10 +463,10 @@ function render(){
           <button onclick="window._fmt('italic')" title="이탤릭 (Ctrl+I)" style="${fmtC(t)};font-style:italic;color:${t.tx};"><i>I</i></button>
           <button onclick="window._fmt('strike')" title="취소선" style="${fmtC(t)};text-decoration:line-through;color:${t.tx};"><s>S</s></button>
           <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
-          ${isTxt?`<button onclick="window._cvtMd('${activeFile.id}')" title=".txt를 .md로 변환" style="${cvtC(t)};">.txt → .md</button>`:""}
+          ${isTxt?`<button onclick="window._cvtMd('${activeFile.id}')" style="${cvtC(t)}">.txt → .md</button>`:""}
           <div style="flex:1;"></div>
-          <button onclick="window._export('txt')" title="plain text로 내보내기" style="${fmtC(t)};font-size:10px;padding:2px 8px;">↓ .txt</button>
-          <button onclick="window._export('md')"  title="마크다운으로 내보내기"  style="${fmtC(t)};font-size:10px;padding:2px 8px;">↓ .md</button>
+          <button onclick="window._export('txt')" style="${fmtC(t)};font-size:10px;padding:2px 8px;">↓ .txt</button>
+          <button onclick="window._export('md')"  style="${fmtC(t)};font-size:10px;padding:2px 8px;">↓ .md</button>
         </div>`:""}
 
         <!-- Find/Replace -->
@@ -462,7 +479,7 @@ function render(){
             <button onclick="window._btn('find')" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>
           </div>`:""}
 
-        <!-- Editor (contenteditable WYSIWYG) -->
+        <!-- Editor -->
         ${activeFile
           ?`<div id="editor" contenteditable="true"
               oninput="window._tc()"
@@ -486,7 +503,7 @@ function render(){
         <!-- Status bar -->
         <div id="statusbar" style="display:flex;align-items:center;gap:16px;padding:3px 16px;background:${t.sb};border-top:1px solid ${t.bd};font-size:10px;color:${t.mt};flex-shrink:0;">
           ${activeFile
-            ?`<span>${esc(activeFile.name)}</span><span>줄: ${lineCount}</span><span>글자: ${charCount}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
+            ?`<span>${esc(activeFile.name)}</span><span>줄: ${txt.split("\n").length}</span><span>글자: ${txt.length}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
             :`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`}
         </div>
       </div>
@@ -505,48 +522,38 @@ function render(){
       </div>`:""}
   </div>`;
 
-  // ── contenteditable에 내용 삽입 (innerHTML 직접 설정) ──
+  // 에디터 내용 삽입
   if(activeFile){
     const ed=document.getElementById("editor");
-    if(ed){
-      ed.innerHTML=textToHTML(activeFile.content);
-      // 다크모드 스타일 주입
-      const style=document.createElement("style");
-      style.textContent=`
-        #editor b, #editor strong { font-weight:700; }
-        #editor i, #editor em     { font-style:italic; }
-        #editor s, #editor strike, #editor del { text-decoration:line-through; }
-        #editor div:empty::before { content:"\\00a0"; }
-      `;
-      document.head.appendChild(style);
-    }
+    if(ed) ed.innerHTML=textToHTML(activeFile.content);
   }
 
-  // ── Focus ──────────────────────────────
+  // 포커스
   if(state.renamingId)    setTimeout(()=>{const el=document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
   if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
 
-  // ── Global handlers ─────────────────────
-  window._pwi=(v)=>{state.pwInput=v;};
-  window._pwLogin=tryLogin;
+  // SortableJS 초기화
+  setTimeout(initSortables, 0);
+
+  // 핸들러
+  window._pwi=(v)=>{state.pwInput=v;}; window._pwLogin=tryLogin;
   window._btn=(a)=>{
-    if     (a==="dark")         {state.dark=!state.dark;render();}
-    else if(a==="wrap")         {state.wordWrap=!state.wordWrap;render();}
-    else if(a==="zm-")          {state.zoom=Math.max(state.zoom-10,50);render();}
-    else if(a==="zm+")          {state.zoom=Math.min(state.zoom+10,200);render();}
-    else if(a==="find")         {state.findOpen=!state.findOpen;render();}
-    else if(a==="find_exec")    handleFind();
-    else if(a==="replace_exec") handleReplace();
-    else if(a==="newfolder")    {state.newFolderMode=true;render();}
-    else if(a==="confirmfolder")newFolder();
-    else if(a==="sidebar")      {state.sidebarOpen=!state.sidebarOpen;render();}
-    else if(a==="lock"){localStorage.removeItem('notepad_authed');state.authed=false;state.pwInput="";state.pwError=false;render();}
+    if     (a==="dark")          {state.dark=!state.dark;render();}
+    else if(a==="wrap")          {state.wordWrap=!state.wordWrap;render();}
+    else if(a==="zm-")           {state.zoom=Math.max(state.zoom-10,50);render();}
+    else if(a==="zm+")           {state.zoom=Math.min(state.zoom+10,200);render();}
+    else if(a==="find")          {state.findOpen=!state.findOpen;render();}
+    else if(a==="find_exec")     handleFind();
+    else if(a==="replace_exec")  handleReplace();
+    else if(a==="newfolder")     {state.newFolderMode=true;render();}
+    else if(a==="confirmfolder") newFolder();
+    else if(a==="sidebar")       {state.sidebarOpen=!state.sidebarOpen;render();}
+    else if(a==="lock")          {localStorage.removeItem("notepad_authed");state.authed=false;state.pwInput="";state.pwError=false;render();}
   };
   window._tf=toggleFolder;
   window._of=(id)=>{const f=state.files.find(x=>x.id===id);if(f)openFile(f);};
   window._nf=newFile;
   window._at=(id)=>{
-    // 탭 전환 전 현재 에디터 내용 저장
     const ed=document.getElementById("editor");
     if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
     state.activeTab=id; render();
@@ -557,10 +564,10 @@ function render(){
     closeTab(fileId);
   };
   window._tc=handleTextChange;
-  window._refresh=refreshData;
   window._fmt=applyFormat;
   window._export=exportFile;
   window._cvtMd=convertToMd;
+  window._refresh=refreshData;
   window._fi=(v,w)=>{if(w==="find")state.findText=v;else state.replaceText=v;};
   window._nfi=(v)=>{state.newFolderName=v;};
   window._nfk=(e)=>{if(e.key==="Enter")newFolder();if(e.key==="Escape"){state.newFolderMode=false;state.newFolderName="";render();}};
@@ -575,15 +582,12 @@ function render(){
     else if(a==="newfile")  {newFile(id);state.contextMenu=null;}
     else if(a==="delfolder")deleteFolder(id);
   };
-  // 외부 붙여넣기: plain text만 허용해 스타일 오염 방지
   window._paste=(e)=>{
     e.preventDefault();
     const text=e.clipboardData.getData("text/plain");
     const html=text
       .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-      .split("\n")
-      .map(line=>`<div>${line||"<br>"}</div>`)
-      .join("");
+      .split("\n").map(line=>`<div>${line||"<br>"}</div>`).join("");
     document.execCommand("insertHTML",false,html);
     handleTextChange();
   };
@@ -596,7 +600,6 @@ function render(){
     if((e.ctrlKey||e.metaKey)&&(e.key==="="||e.key==="+")){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
     if((e.ctrlKey||e.metaKey)&&e.key==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
     if(e.key==="Tab"){e.preventDefault();document.execCommand("insertText",false,"    ");}
-    // Ctrl+Z / Ctrl+Y: contenteditable 네이티브 동작에 맡김
   };
   document.onclick=(e)=>{if(state.contextMenu&&!e.target.closest("#ctxmenu")){state.contextMenu=null;render();}};
 }
@@ -608,10 +611,13 @@ render();
 ::-webkit-scrollbar{width:6px;height:6px;}
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px;}
-#editor::selection, #editor *::selection{background:#388bfd44;}
+#editor::selection,#editor *::selection{background:#388bfd44;}
+.drag-handle:active{cursor:grabbing;}
+.sortable-ghost{opacity:0.4;}
+.sortable-chosen{opacity:0.9;}
 </style>
 </head>
 <body>
-<div style="height:100vh;display:flex;align-items:center;justify-content:center;background:#0f1117;color:#58a6ff;font-family:monospace;">불러오는 중...</div>
+<div style="height:100vh;display:flex;align-items:center;justify-content:center;background:#f6f8fa;color:#0969da;font-family:monospace;">불러오는 중...</div>
 </body>
 </html>
