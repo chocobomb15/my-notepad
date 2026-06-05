@@ -120,13 +120,15 @@ function htmlToMarkdown(html){
   md=md.replace(/<strike>([\s\S]*?)<\/strike>/gi,"~~$1~~");
   md=md.replace(/<del>([\s\S]*?)<\/del>/gi,"~~$1~~");
   md=md.replace(/<br\s*\/?>/gi,"\n");
-  md=md.replace(/<\/div>/gi,"\n");
-  md=md.replace(/<div>/gi,"");
+  md=md.replace(/<div><br\s*\/?><\/div>/gi,"\n");
+  md=md.replace(/<\/div><div>/gi,"\n");
+  md=md.replace(/<div>/gi,"\n");
+  md=md.replace(/<\/div>/gi,"");
   md=md.replace(/<\/p>/gi,"\n");
   md=md.replace(/<p>/gi,"");
   md=md.replace(/<[^>]+>/g,"");
   md=md.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&nbsp;/g," ");
-  return md.replace(/\n{3,}/g,"\n\n").trim();
+  return md.replace(/\n{3,}/g,"\n\n").replace(/^\n+/,"").trim();
 }
 
 // HTML → 순수 plain text (내보내기용)
@@ -577,7 +579,12 @@ function render(){
   window._paste=(e)=>{
     e.preventDefault();
     const text=e.clipboardData.getData("text/plain");
-    document.execCommand("insertText",false,text);
+    const html=text
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .split("\n")
+      .map(line=>`<div>${line||"<br>"}</div>`)
+      .join("");
+    document.execCommand("insertHTML",false,html);
     handleTextChange();
   };
   window._kd=(e)=>{
