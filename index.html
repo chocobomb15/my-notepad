@@ -78,6 +78,7 @@ async function loadData(){
 async function tryLogin(){
   if(state.pwInput===PASSWORD){
     state.pwError=false;
+    localStorage.setItem('notepad_authed','1');
     if(!state.firebaseReady){await signInAnonymously(auth);}
     else{state.authed=true;await loadData();}
   } else {
@@ -87,8 +88,16 @@ async function tryLogin(){
 }
 onAuthStateChanged(auth,async(user)=>{
   state.firebaseReady=!!user;
-  if(user&&state.pwInput===PASSWORD){state.authed=true;await loadData();}
+  const remembered=localStorage.getItem('notepad_authed')==='1';
+  if(user&&(state.pwInput===PASSWORD||remembered)){
+    state.authed=true;await loadData();
+  }
 });
+async function refreshData(){
+  const btn=document.getElementById('refreshBtn');
+  if(btn){btn.style.opacity='0.4';btn.style.pointerEvents='none';}
+  await loadData();
+}
 
 // ─── Content helpers ──────────────────────
 // 기존 plain text → editor용 HTML 변환
@@ -354,6 +363,7 @@ function render(){
       <button onclick="window._btn('zm+')" style="${btnC(t)}">＋</button>
       <button onclick="window._btn('dark')" style="${btnC(t)}">${state.dark?"☀️":"🌙"}</button>
       <button onclick="window._btn('lock')" title="잠금" style="${btnC(t)};color:${t.mt};">🔒</button>
+      <button id="refreshBtn" onclick="window._refresh()" title="최신 데이터 불러오기" style="${btnC(t)};">🔄</button>
       <span id="saveindicator" style="font-size:10px;min-width:52px;text-align:right;color:#34d399;opacity:0.9;">✓ 저장됨</span>
     </div>
 
@@ -520,7 +530,7 @@ function render(){
     else if(a==="newfolder")    {state.newFolderMode=true;render();}
     else if(a==="confirmfolder")newFolder();
     else if(a==="sidebar")      {state.sidebarOpen=!state.sidebarOpen;render();}
-    else if(a==="lock")         {state.authed=false;state.pwInput="";state.pwError=false;render();}
+    else if(a==="lock"){localStorage.removeItem('notepad_authed');state.authed=false;state.pwInput="";state.pwError=false;render();}
   };
   window._tf=toggleFolder;
   window._of=(id)=>{const f=state.files.find(x=>x.id===id);if(f)openFile(f);};
@@ -537,6 +547,7 @@ function render(){
     closeTab(fileId);
   };
   window._tc=handleTextChange;
+  window._refresh=refreshData;
   window._fmt=applyFormat;
   window._export=exportFile;
   window._cvtMd=convertToMd;
