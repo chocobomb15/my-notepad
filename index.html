@@ -244,13 +244,21 @@ async function handleReplace(){
 // ─── Folder / File actions ────────────────
 function toggleFolder(folderId){
   const isOpen=state.openFolderIds.includes(folderId);
-  if(isOpen){ state.openFolderIds=state.openFolderIds.filter(id=>id!==folderId); }
-  else{
-    state.openFolderIds=[...state.openFolderIds,folderId];
+  if(isOpen){
+    // 접기: 해당 폴더 탭 모두 닫기
+    state.openFolderIds=state.openFolderIds.filter(id=>id!==folderId);
+    const folderFileIds=state.files.filter(f=>f.folderId===folderId).map(f=>f.id);
+    state.tabs=state.tabs.filter(t=>!folderFileIds.includes(t.fileId));
+    if(folderFileIds.includes(state.activeTab)) state.activeTab=state.tabs.length>0?state.tabs[state.tabs.length-1].fileId:null;
+  } else {
+    // 펼치기: 다른 폴더 탭 모두 닫고 이 폴더 탭만 열기
+    const otherFileIds=state.files.filter(f=>f.folderId!==folderId).map(f=>f.id);
+    state.tabs=state.tabs.filter(t=>!otherFileIds.includes(t.fileId));
+    state.openFolderIds=[folderId];
     const ff=state.files.filter(f=>f.folderId===folderId);
     const newTabs=ff.filter(f=>!state.tabs.find(t=>t.fileId===f.id)).map(f=>({fileId:f.id,folderId}));
     state.tabs=[...state.tabs,...newTabs];
-    if(ff.length>0&&!state.activeTab) state.activeTab=ff[0].id;
+    state.activeTab=ff.length>0?ff[0].id:null;
   }
   render();
 }
