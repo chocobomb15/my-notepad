@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Notepad</title>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc, query, orderBy }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//  🔑 비밀번호 설정
+const PASSWORD = "1234";
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCy_N5148mkQh23Ym3IG79U132xXHHLUpI",
+  authDomain: "my-notepad-6d9a7.firebaseapp.com",
+  projectId: "my-notepad-6d9a7",
+  storageBucket: "my-notepad-6d9a7.firebasestorage.app",
+  messagingSenderId: "680380482761",
+  appId: "1:680380482761:web:0688b2afda21154ad7b918"
+};
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+
+let state = {
+  authed:false, firebaseReady:false,
+  dark:true, folders:[], files:[],
+  openFolderIds:[], tabs:[], activeTab:null,
+  zoom:100, wordWrap:true,
+  findOpen:false, findText:"", replaceText:"",
+  contextMenu:null,
+  newFolderMode:false, newFolderName:"",
+  renamingId:null, renamingVal:"",
+  saveTimer:null, saving:false,
+  pwInput:"", pwError:false,
+  sidebarOpen:true,
+};
+
+const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9"];
+function genId(){return Math.random().toString(36).slice(2,10)+Date.now().toString(36);}
+
+// ─── Firestore ────────────────────────────
+function uid(){return auth.currentUser?.uid||"default";}
+function foldersCol(){return collection(db,"users",uid(),"folders");}
+function filesCol()  {return collection(db,"users",uid(),"files");}
+async function saveFolder(f){await setDoc(doc(foldersCol(),f.id),f);}
+async function saveFile(f)  {await setDoc(doc(filesCol(),f.id),f);}
+async function delFolder(id){await deleteDoc(doc(foldersCol(),id));}
+async function delFile(id)  {await deleteDoc(doc(filesCol(),id));}
+
+async function loadData(){
+  const [fSnap,fileSnap]=await Promise.all([
+    getDocs(query(foldersCol(),orderBy("createdAt"))),
+    getDocs(query(filesCol(),  orderBy("createdAt")))
+  ]);
+  state.folders=fSnap.docs.map(d=>d.data());
+  state.files  =fileSnap.docs.map(d=>d.data());
+  if(state.folders.length===0){
+    const f1  ={id:genId(),name:"개인",color:COLORS[0],createdAt:Date.now()};
+    const f2  ={id:genId(),name:"업무",color:COLORS[1],createdAt:Date.now()+1};
+    const fil1={id:genId(),folderId:f1.id,name:"일기.md",    content:"오늘의 일기를 작성해보세요...",createdAt:Date.now()};
+    const fil2={id:genId(),folderId:f2.id,name:"할일목록.md",content:"할일 목록을 작성해보세요.",createdAt:Date.now()+1};
+    await Promise.all([saveFolder(f1),saveFolder(f2),saveFile(fil1),saveFile(fil2)]);
+    state.folders=[f1,f2]; state.files=[fil1,fil2];
+    state.openFolderIds=[f1.id]; state.tabs=[{fileId:fil1.id,folderId:f1.id}]; state.activeTab=fil1.id;
+  }
+  render();
+}
+
+// ─── Auth ─────────────────────────────────
+async function tryLogin(){
+  if(state.pwInput===PASSWORD){
+    state.pwError=false;
+    if(!state.firebaseReady){await signInAnonymously(auth);}
+    else{state.authed=true;await loadData();}
+  } else {
+    state.pwError=true; render();
+    setTimeout(()=>document.getElementById("pwInput")?.focus(),50);
+  }
+}
+onAuthStateChanged(auth,async(user)=>{
+  state.firebaseReady=!!user;
+  if(user&&state.pwInput===PASSWORD){state.authed=true;await loadData();}
+});
+
+// ─── Content helpers ──────────────────────
+// 기존 plain text → editor용 HTML 변환
+function textToHTML(content){
+  if(isHTML(content)) return content;
+  return content
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .split("\n").map(line=>`<div>${line||"<br>"}</div>`).join("");
+}
+function isHTML(s){ return /<(strong|em|b|i|s|del|div|br|p)\b/i.test(s); }
+
+// HTML → Markdown 텍스트 변환 (내보내기용)
+function htmlToMarkdown(html){
+  let md=html;
+  md=md.replace(/<strong>([\s\S]*?)<\/strong>/gi,"**$1**");
+  md=md.replace(/<b>([\s\S]*?)<\/b>/gi,"**$1**");
+  md=md.replace(/<em>([\s\S]*?)<\/em>/gi,"*$1*");
+  md=md.replace(/<i>([\s\S]*?)<\/i>/gi,"*$1*");
+  md=md.replace(/<s>([\s\S]*?)<\/s>/gi,"~~$1~~");
+  md=md.replace(/<strike>([\s\S]*?)<\/strike>/gi,"~~$1~~");
+  md=md.replace(/<del>([\s\S]*?)<\/del>/gi,"~~$1~~");
+  md=md.replace(/<br\s*\/?>/gi,"\n");
+  md=md.replace(/<\/div>/gi,"\n");
+  md=md.replace(/<div>/gi,"");
+  md=md.replace(/<\/p>/gi,"\n");
+  md=md.replace(/<p>/gi,"");
+  md=md.replace(/<[^>]+>/g,"");
+  md=md.replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&nbsp;/g," ");
+  return md.replace(/\n{3,}/g,"\n\n").trim();
+}
+
+// HTML → 순수 plain text (내보내기용)
+function htmlToText(html){
+  let txt=htmlToMarkdown(html);
+  txt=txt.replace(/\*\*([\s\S]*?)\*\*/g,"$1");
+  txt=txt.replace(/\*([\s\S]*?)\*/g,"$1");
+  txt=txt.replace(/~~([\s\S]*?)~~/g,"$1");
+  return txt;
+}
+
+// 현재 에디터에서 innerHTML 가져오기
+function getEditorContent(){
+  const ed=document.getElementById("editor");
+  return ed ? ed.innerHTML : "";
+}
+
+// ─── Text change (partial DOM update, preserves undo) ─────────────
+function handleTextChange(){
+  const content=getEditorContent();
+  state.files=state.files.map(f=>f.id===state.activeTab?{...f,content}:f);
+  updateStatusBar();
+  const t=T(), si=document.getElementById("saveindicator");
+  if(si) si.innerHTML=`<span style="color:${t.mt};font-size:10px;">저장 중...</span>`;
+  clearTimeout(state.saveTimer);
+  state.saveTimer=setTimeout(async()=>{
+    const f=state.files.find(f=>f.id===state.activeTab);
+    if(f) await saveFile(f);
+    const si2=document.getElementById("saveindicator");
+    if(si2) si2.innerHTML=`<span style="color:#34d399;font-size:10px;opacity:0.9;">✓ 저장됨</span>`;
+  },700);
+}
+
+// ─── Formatting (execCommand → native undo 스택에 포함됨) ─────────
+function applyFormat(type){
+  const ed=document.getElementById("editor"); if(!ed) return;
+  ed.focus();
+  const cmd=type==="bold"?"bold":type==="italic"?"italic":"strikeThrough";
+  document.execCommand(cmd,false,null);
+  handleTextChange();
+}
+
+// ─── Insert date ──────────────────────────
+function insertDateTime(){
+  const ed=document.getElementById("editor"); if(!ed) return;
+  ed.focus();
+  const now=new Date();
+  const dt=`${now.toLocaleDateString("ko-KR")} ${now.toLocaleTimeString("ko-KR")}`;
+  document.execCommand("insertText",false,dt);
+  handleTextChange();
+}
+
+// ─── Export ───────────────────────────────
+function exportFile(format){
+  const file=state.files.find(f=>f.id===state.activeTab); if(!file) return;
+  const baseName=file.name.replace(/\.[^/.]+$/,"");
+  let content, ext;
+  if(format==="md")  { content=htmlToMarkdown(file.content); ext=".md"; }
+  else               { content=htmlToText(file.content);     ext=".txt"; }
+  const blob=new Blob([content],{type:"text/plain;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a"); a.href=url; a.download=baseName+ext; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Convert .txt → .md ───────────────────
+async function convertToMd(fileId){
+  const file=state.files.find(f=>f.id===fileId); if(!file) return;
+  const newName=file.name.replace(/\.txt$/i,".md");
+  state.files=state.files.map(f=>f.id===fileId?{...f,name:newName}:f);
+  await saveFile(state.files.find(f=>f.id===fileId));
+  render();
+}
+
+// ─── Find / Replace ───────────────────────
+function handleFind(){
+  const file=state.files.find(f=>f.id===state.activeTab);
+  if(!file||!state.findText) return;
+  const ed=document.getElementById("editor"); if(!ed) return;
+  const text=ed.innerText;
+  const idx=text.indexOf(state.findText);
+  if(idx===-1) return;
+  // 텍스트 노드에서 찾아 선택
+  const range=document.createRange(), sel=window.getSelection();
+  let charCount=0, found=false;
+  function walk(node){
+    if(found) return;
+    if(node.nodeType===3){
+      const end=charCount+node.length;
+      if(!found && charCount<=idx && idx<end){
+        range.setStart(node,idx-charCount);
+        range.setEnd(node,Math.min(idx-charCount+state.findText.length, node.length));
+        found=true;
+      }
+      charCount+=node.length;
+    } else { node.childNodes.forEach(walk); }
+  }
+  walk(ed);
+  if(found){ sel.removeAllRanges(); sel.addRange(range); ed.focus(); }
+}
+
+async function handleReplace(){
+  const file=state.files.find(f=>f.id===state.activeTab);
+  if(!file||!state.findText) return;
+  const md=htmlToMarkdown(file.content);
+  const newMd=md.replaceAll(state.findText,state.replaceText);
+  const newHTML=textToHTML(newMd);
+  state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:newHTML}:f);
+  const ed=document.getElementById("editor");
+  if(ed) ed.innerHTML=newHTML;
+  await saveFile({...file,content:newHTML});
+  updateStatusBar();
+}
+
+// ─── Folder / File actions ────────────────
+function toggleFolder(folderId){
+  const isOpen=state.openFolderIds.includes(folderId);
+  if(isOpen){ state.openFolderIds=state.openFolderIds.filter(id=>id!==folderId); }
+  else{
+    state.openFolderIds=[...state.openFolderIds,folderId];
+    const ff=state.files.filter(f=>f.folderId===folderId);
+    const newTabs=ff.filter(f=>!state.tabs.find(t=>t.fileId===f.id)).map(f=>({fileId:f.id,folderId}));
+    state.tabs=[...state.tabs,...newTabs];
+    if(ff.length>0&&!state.activeTab) state.activeTab=ff[0].id;
+  }
+  render();
+}
+function openFile(file){
+  if(!state.tabs.find(t=>t.fileId===file.id)) state.tabs=[...state.tabs,{fileId:file.id,folderId:file.folderId}];
+  state.activeTab=file.id; render();
+}
+function closeTab(fileId){
+  state.tabs=state.tabs.filter(t=>t.fileId!==fileId);
+  if(state.activeTab===fileId) state.activeTab=state.tabs.length>0?state.tabs[state.tabs.length-1].fileId:null;
+  render();
+}
+async function newFile(folderId){
+  const f={id:genId(),folderId,name:"새 파일.md",content:"",createdAt:Date.now()};
+  state.files=[...state.files,f]; state.tabs=[...state.tabs,{fileId:f.id,folderId}];
+  state.activeTab=f.id; state.renamingId=f.id; state.renamingVal="새 파일.md";
+  await saveFile(f); render();
+}
+async function newFolder(){
+  const name=state.newFolderName.trim();
+  if(!name){state.newFolderMode=false;state.newFolderName="";render();return;}
+  const f={id:genId(),name,color:COLORS[state.folders.length%COLORS.length],createdAt:Date.now()};
+  state.folders=[...state.folders,f]; state.newFolderMode=false; state.newFolderName="";
+  await saveFolder(f); render();
+}
+async function commitRename(id){
+  const val=state.renamingVal.trim();
+  if(val){state.files=state.files.map(f=>f.id===id?{...f,name:val}:f);await saveFile(state.files.find(f=>f.id===id));}
+  state.renamingId=null; render();
+}
+async function deleteFile(id){
+  closeTab(id); state.files=state.files.filter(f=>f.id!==id); state.contextMenu=null;
+  await delFile(id); render();
+}
+async function deleteFolder(folderId){
+  const ids=state.files.filter(f=>f.folderId===folderId).map(f=>f.id);
+  state.tabs=state.tabs.filter(t=>!ids.includes(t.fileId));
+  if(ids.includes(state.activeTab)) state.activeTab=null;
+  state.files=state.files.filter(f=>f.folderId!==folderId);
+  state.folders=state.folders.filter(f=>f.id!==folderId); state.contextMenu=null;
+  await Promise.all([...ids.map(id=>delFile(id)),delFolder(folderId)]); render();
+}
+
+// ─── Theme & CSS ──────────────────────────
+function T(){return state.dark
+  ?{bg:"#0f1117",sb:"#161b22",tab:"#1c2128",tabA:"#0f1117",bd:"#30363d",tx:"#e6edf3",mt:"#8b949e",ac:"#58a6ff",hv:"#21262d",inp:"#161b22",toolbar:"#161b22"}
+  :{bg:"#ffffff",sb:"#f6f8fa",tab:"#f6f8fa",tabA:"#ffffff",bd:"#d0d7de",tx:"#1f2328",mt:"#57606a",ac:"#0969da",hv:"#eaeef2",inp:"#f6f8fa",toolbar:"#f6f8fa"};}
+function esc(s=""){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+const btnC =t=>`background:none;border:1px solid ${t.bd};border-radius:5px;cursor:pointer;color:${t.tx};padding:3px 8px;font-size:13px;font-family:inherit;`;
+const inpC =t=>`background:${t.inp};border:1px solid ${t.bd};border-radius:4px;color:${t.tx};padding:3px 8px;font-size:11px;font-family:inherit;outline:none;`;
+const actC =t=>`background:${t.ac}22;border:1px solid ${t.ac}44;border-radius:4px;cursor:pointer;color:${t.ac};padding:3px 10px;font-size:11px;font-family:inherit;`;
+const fmtC =t=>`background:none;border:1px solid ${t.bd};border-radius:4px;cursor:pointer;color:${t.mt};padding:2px 9px;font-size:12px;font-family:inherit;min-width:28px;transition:all 0.1s;`;
+const cvtC =t=>`background:${t.ac}18;border:1px solid ${t.ac}55;border-radius:4px;cursor:pointer;color:${t.ac};padding:2px 9px;font-size:11px;font-family:inherit;`;
+
+function updateStatusBar(){
+  const file=state.files.find(f=>f.id===state.activeTab);
+  const t=T(), sb=document.getElementById("statusbar");
+  if(!sb) return;
+  const charCount=file ? htmlToText(file.content).length : 0;
+  const lineCount=file ? htmlToText(file.content).split("\n").length : 0;
+  sb.innerHTML=file
+    ?`<span>${esc(file.name)}</span><span>줄: ${lineCount}</span><span>글자: ${charCount}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
+    :`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`;
+}
+
+// ─── Render ───────────────────────────────
+function render(){
+  const t=T();
+  document.body.style.cssText=`margin:0;padding:0;background:${t.bg};color:${t.tx};font-family:'JetBrains Mono','Fira Code',Consolas,monospace;overflow:hidden;height:100vh;`;
+
+  // ── Login ──────────────────────────────
+  if(!state.authed){
+    document.body.innerHTML=`
+    <div style="height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;">
+      <div style="font-size:44px;">✎</div>
+      <div style="font-size:22px;font-weight:700;letter-spacing:3px;color:${t.ac};">NOTEPAD</div>
+      <div style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;padding:32px 40px;display:flex;flex-direction:column;gap:14px;width:300px;">
+        <label style="font-size:11px;color:${t.mt};letter-spacing:1px;">비밀번호</label>
+        <input id="pwInput" type="password" value="${esc(state.pwInput)}" placeholder="비밀번호를 입력하세요"
+          oninput="window._pwi(this.value)" onkeydown="if(event.key==='Enter')window._pwLogin()" autofocus
+          style="${inpC(t)};font-size:15px;padding:10px 14px;width:100%;box-sizing:border-box;border-color:${state.pwError?"#f87171":t.bd};"/>
+        ${state.pwError?`<div style="font-size:11px;color:#f87171;">비밀번호가 올바르지 않습니다.</div>`:""}
+        <button onclick="window._pwLogin()" style="background:${t.ac};color:#fff;border:none;padding:10px;border-radius:6px;font-size:14px;cursor:pointer;font-family:inherit;font-weight:600;">입장</button>
+      </div>
+    </div>`;
+    window._pwi=(v)=>{state.pwInput=v;};
+    window._pwLogin=tryLogin;
+    setTimeout(()=>document.getElementById("pwInput")?.focus(),50);
+    return;
+  }
+
+  const activeFile=state.files.find(f=>f.id===state.activeTab);
+  const tabFiles  =state.tabs.map(tab=>state.files.find(f=>f.id===tab.fileId)).filter(Boolean);
+  const isTxt     =activeFile?.name.toLowerCase().endsWith(".txt");
+  const charCount =activeFile ? htmlToText(activeFile.content).length : 0;
+  const lineCount =activeFile ? htmlToText(activeFile.content).split("\n").length : 0;
+
+  document.body.innerHTML=`
+  <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden;">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;height:44px;background:${t.sb};border-bottom:1px solid ${t.bd};padding:0 12px;gap:8px;flex-shrink:0;">
+      <button onclick="window._btn('sidebar')" title="탐색기 접기/펼치기" style="${btnC(t)};padding:3px 7px;">${state.sidebarOpen?"◀":"▶"}</button>
+      <span style="font-size:15px;font-weight:700;letter-spacing:2px;color:${t.ac};">✎ NOTEPAD</span>
+      <div style="flex:1"></div>
+      <button onclick="window._btn('find')" title="찾기/바꾸기 (Ctrl+H)" style="${btnC(t)}">🔍</button>
+      <button onclick="window._btn('wrap')" title="줄 바꿈" style="${btnC(t)};background:${state.wordWrap?t.ac:"transparent"};color:${state.wordWrap?"#fff":t.mt};">↩</button>
+      <button onclick="window._btn('zm-')" style="${btnC(t)}">－</button>
+      <span style="font-size:11px;color:${t.mt};min-width:36px;text-align:center;">${state.zoom}%</span>
+      <button onclick="window._btn('zm+')" style="${btnC(t)}">＋</button>
+      <button onclick="window._btn('dark')" style="${btnC(t)}">${state.dark?"☀️":"🌙"}</button>
+      <button onclick="window._btn('lock')" title="잠금" style="${btnC(t)};color:${t.mt};">🔒</button>
+      <span id="saveindicator" style="font-size:10px;min-width:52px;text-align:right;color:#34d399;opacity:0.9;">✓ 저장됨</span>
+    </div>
+
+    <div style="display:flex;flex:1;overflow:hidden;">
+
+      <!-- Sidebar -->
+      ${state.sidebarOpen?`
+      <div style="width:220px;background:${t.sb};border-right:1px solid ${t.bd};display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;">
+        <div style="padding:10px 12px 6px;display:flex;align-items:center;justify-content:space-between;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:2px;color:${t.mt};text-transform:uppercase;">탐색기</span>
+          <button onclick="window._btn('newfolder')" style="${btnC(t)};font-size:14px;padding:2px 7px;">+</button>
+        </div>
+        ${state.newFolderMode?`<div style="padding:4px 12px;"><input id="newFolderInput" value="${esc(state.newFolderName)}" placeholder="폴더 이름" oninput="window._nfi(this.value)" onkeydown="window._nfk(event)" onblur="window._btn('confirmfolder')" style="${inpC(t)};width:100%;box-sizing:border-box;"/></div>`:""}
+        <div style="flex:1;overflow-y:auto;">
+          ${state.folders.map(folder=>{
+            const isOpen=state.openFolderIds.includes(folder.id);
+            const ff=state.files.filter(f=>f.folderId===folder.id);
+            return`<div>
+              <div onclick="window._tf('${folder.id}')" oncontextmenu="window._cm(event,'folder','${folder.id}')"
+                style="display:flex;align-items:center;padding:6px 12px;cursor:pointer;gap:6px;border-radius:4px;margin:1px 6px;"
+                onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
+                <span style="font-size:10px;color:${t.mt};">${isOpen?"▾":"▸"}</span>
+                <span style="color:${folder.color};">📁</span>
+                <span style="font-size:12px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(folder.name)}</span>
+                <span style="font-size:10px;color:${t.mt};">${ff.length}</span>
+                <button onclick="event.stopPropagation();window._nf('${folder.id}')" style="${btnC(t)};font-size:11px;padding:1px 5px;">+</button>
+              </div>
+              ${isOpen?ff.map(file=>`
+                <div onclick="window._of('${file.id}')" oncontextmenu="window._cm(event,'file','${file.id}')"
+                  style="display:flex;align-items:center;padding:4px 12px 4px 32px;cursor:pointer;gap:6px;border-radius:4px;margin:1px 6px;
+                    background:${state.activeTab===file.id?t.ac+"22":"transparent"};
+                    border-left:${state.activeTab===file.id?`2px solid ${t.ac}`:"2px solid transparent"};"
+                  onmouseenter="this.style.background='${state.activeTab===file.id?t.ac+"22":t.hv}'"
+                  onmouseleave="this.style.background='${state.activeTab===file.id?t.ac+"22":"transparent"}'">
+                  <span style="font-size:11px;">📄</span>
+                  ${state.renamingId===file.id
+                    ?`<input id="renameInput" value="${esc(state.renamingVal)}" onclick="event.stopPropagation()" oninput="window._ri(this.value)" onkeydown="window._rk(event,'${file.id}')" onblur="window._rc('${file.id}')" style="${inpC(t)};flex:1;font-size:11px;"/>`
+                    :`<span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(file.name)}</span>`}
+                </div>`).join(""):""}
+            </div>`;}).join("")}
+        </div>
+      </div>`:""}
+
+      <!-- Main -->
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;">
+
+        <!-- Tabs -->
+        <div style="display:flex;background:${t.tab};border-bottom:1px solid ${t.bd};overflow-x:auto;flex-shrink:0;scrollbar-width:none;">
+          ${tabFiles.length===0
+            ?`<div style="padding:8px 16px;color:${t.mt};font-size:12px;">파일을 클릭해 여세요</div>`
+            :tabFiles.map(file=>`
+              <div onclick="window._at('${file.id}')"
+                style="display:flex;align-items:center;gap:6px;padding:8px 14px;cursor:pointer;white-space:nowrap;
+                  border-right:1px solid ${t.bd};
+                  border-bottom:${state.activeTab===file.id?`2px solid ${t.ac}`:"2px solid transparent"};
+                  background:${state.activeTab===file.id?t.tabA:"transparent"};
+                  font-size:12px;color:${state.activeTab===file.id?t.tx:t.mt};">
+                <span style="font-size:10px;">📄</span>
+                <span ondblclick="window._startRename('${file.id}')">${esc(file.name)}</span>
+                <button onclick="event.stopPropagation();window._ct('${file.id}')"
+                  style="background:none;border:none;cursor:pointer;color:${t.mt};font-size:12px;padding:0 2px;border-radius:2px;"
+                  onmouseenter="this.style.color='#f87171'" onmouseleave="this.style.color='${t.mt}'">✕</button>
+              </div>`).join("")}
+        </div>
+
+        <!-- Formatting toolbar -->
+        ${activeFile?`
+        <div style="display:flex;align-items:center;gap:5px;padding:5px 12px;background:${t.toolbar};border-bottom:1px solid ${t.bd};flex-shrink:0;">
+          <button onclick="window._fmt('bold')"   title="볼드 (Ctrl+B)" style="${fmtC(t)};font-weight:700;color:${t.tx};"><b>B</b></button>
+          <button onclick="window._fmt('italic')" title="이탤릭 (Ctrl+I)" style="${fmtC(t)};font-style:italic;color:${t.tx};"><i>I</i></button>
+          <button onclick="window._fmt('strike')" title="취소선" style="${fmtC(t)};text-decoration:line-through;color:${t.tx};"><s>S</s></button>
+          <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
+          ${isTxt?`<button onclick="window._cvtMd('${activeFile.id}')" title=".txt를 .md로 변환" style="${cvtC(t)};">.txt → .md</button>`:""}
+          <div style="flex:1;"></div>
+          <button onclick="window._export('txt')" title="plain text로 내보내기" style="${fmtC(t)};font-size:10px;padding:2px 8px;">↓ .txt</button>
+          <button onclick="window._export('md')"  title="마크다운으로 내보내기"  style="${fmtC(t)};font-size:10px;padding:2px 8px;">↓ .md</button>
+        </div>`:""}
+
+        <!-- Find/Replace -->
+        ${state.findOpen?`
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:${t.sb};border-bottom:1px solid ${t.bd};flex-shrink:0;flex-wrap:wrap;">
+            <input value="${esc(state.findText)}" placeholder="찾기..." oninput="window._fi(this.value,'find')" onkeydown="if(event.key==='Enter')window._btn('find_exec')" style="${inpC(t)};width:150px;"/>
+            <input value="${esc(state.replaceText)}" placeholder="바꾸기..." oninput="window._fi(this.value,'replace')" onkeydown="if(event.key==='Enter')window._btn('replace_exec')" style="${inpC(t)};width:150px;"/>
+            <button onclick="window._btn('find_exec')" style="${actC(t)}">찾기</button>
+            <button onclick="window._btn('replace_exec')" style="${actC(t)}">모두 바꾸기</button>
+            <button onclick="window._btn('find')" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>
+          </div>`:""}
+
+        <!-- Editor (contenteditable WYSIWYG) -->
+        ${activeFile
+          ?`<div id="editor" contenteditable="true"
+              oninput="window._tc()"
+              onkeydown="window._kd(event)"
+              onpaste="window._paste(event)"
+              spellcheck="false"
+              style="flex:1;background:${t.bg};color:${t.tx};border:none;outline:none;overflow-y:auto;
+                padding:20px 28px;font-size:${Math.round(14*state.zoom/100)}px;line-height:1.85;
+                font-family:'JetBrains Mono','Fira Code',Consolas,monospace;
+                word-break:${state.wordWrap?"break-word":"normal"};
+                overflow-wrap:${state.wordWrap?"break-word":"normal"};
+                white-space:${state.wordWrap?"pre-wrap":"pre"};
+                caret-color:${t.ac};cursor:text;box-sizing:border-box;"
+            ></div>`
+          :`<div style="flex:1;display:flex;align-items:center;justify-content:center;color:${t.mt};flex-direction:column;gap:12px;">
+              <span style="font-size:40px;">✎</span>
+              <span style="font-size:14px;">파일을 선택하거나 새로 만드세요</span>
+              <span style="font-size:11px;opacity:0.6;">F5: 날짜·시간 삽입 · Ctrl+H: 찾기·바꾸기</span>
+            </div>`}
+
+        <!-- Status bar -->
+        <div id="statusbar" style="display:flex;align-items:center;gap:16px;padding:3px 16px;background:${t.sb};border-top:1px solid ${t.bd};font-size:10px;color:${t.mt};flex-shrink:0;">
+          ${activeFile
+            ?`<span>${esc(activeFile.name)}</span><span>줄: ${lineCount}</span><span>글자: ${charCount}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
+            :`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`}
+        </div>
+      </div>
+    </div>
+
+    <!-- Context Menu -->
+    ${state.contextMenu?`
+      <div id="ctxmenu" style="position:fixed;top:${state.contextMenu.y}px;left:${state.contextMenu.x}px;
+        background:${t.sb};border:1px solid ${t.bd};border-radius:6px;z-index:1000;min-width:140px;
+        box-shadow:0 8px 24px rgba(0,0,0,0.4);overflow:hidden;">
+        ${state.contextMenu.type==="file"
+          ?`<div onclick="window._ctxA('rename','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">이름 바꾸기</div>
+             <div onclick="window._ctxA('delfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">삭제</div>`
+          :`<div onclick="window._ctxA('newfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 파일</div>
+             <div onclick="window._ctxA('delfolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">폴더 삭제</div>`}
+      </div>`:""}
+  </div>`;
+
+  // ── contenteditable에 내용 삽입 (innerHTML 직접 설정) ──
+  if(activeFile){
+    const ed=document.getElementById("editor");
+    if(ed){
+      ed.innerHTML=textToHTML(activeFile.content);
+      // 다크모드 스타일 주입
+      const style=document.createElement("style");
+      style.textContent=`
+        #editor b, #editor strong { font-weight:700; }
+        #editor i, #editor em     { font-style:italic; }
+        #editor s, #editor strike, #editor del { text-decoration:line-through; }
+        #editor div:empty::before { content:"\\00a0"; }
+      `;
+      document.head.appendChild(style);
+    }
+  }
+
+  // ── Focus ──────────────────────────────
+  if(state.renamingId)    setTimeout(()=>{const el=document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
+  if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
+
+  // ── Global handlers ─────────────────────
+  window._pwi=(v)=>{state.pwInput=v;};
+  window._pwLogin=tryLogin;
+  window._btn=(a)=>{
+    if     (a==="dark")         {state.dark=!state.dark;render();}
+    else if(a==="wrap")         {state.wordWrap=!state.wordWrap;render();}
+    else if(a==="zm-")          {state.zoom=Math.max(state.zoom-10,50);render();}
+    else if(a==="zm+")          {state.zoom=Math.min(state.zoom+10,200);render();}
+    else if(a==="find")         {state.findOpen=!state.findOpen;render();}
+    else if(a==="find_exec")    handleFind();
+    else if(a==="replace_exec") handleReplace();
+    else if(a==="newfolder")    {state.newFolderMode=true;render();}
+    else if(a==="confirmfolder")newFolder();
+    else if(a==="sidebar")      {state.sidebarOpen=!state.sidebarOpen;render();}
+    else if(a==="lock")         {state.authed=false;state.pwInput="";state.pwError=false;render();}
+  };
+  window._tf=toggleFolder;
+  window._of=(id)=>{const f=state.files.find(x=>x.id===id);if(f)openFile(f);};
+  window._nf=newFile;
+  window._at=(id)=>{
+    // 탭 전환 전 현재 에디터 내용 저장
+    const ed=document.getElementById("editor");
+    if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
+    state.activeTab=id; render();
+  };
+  window._ct=(fileId)=>{
+    const ed=document.getElementById("editor");
+    if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
+    closeTab(fileId);
+  };
+  window._tc=handleTextChange;
+  window._fmt=applyFormat;
+  window._export=exportFile;
+  window._cvtMd=convertToMd;
+  window._fi=(v,w)=>{if(w==="find")state.findText=v;else state.replaceText=v;};
+  window._nfi=(v)=>{state.newFolderName=v;};
+  window._nfk=(e)=>{if(e.key==="Enter")newFolder();if(e.key==="Escape"){state.newFolderMode=false;state.newFolderName="";render();}};
+  window._ri=(v)=>{state.renamingVal=v;};
+  window._rk=(e,id)=>{if(e.key==="Enter")commitRename(id);if(e.key==="Escape"){state.renamingId=null;render();}};
+  window._rc=(id)=>commitRename(id);
+  window._startRename=(id)=>{state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";render();};
+  window._cm=(e,type,id)=>{e.preventDefault();e.stopPropagation();state.contextMenu={type,id,x:e.clientX,y:e.clientY};render();};
+  window._ctxA=(a,id)=>{
+    if     (a==="rename")   {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
+    else if(a==="delfile")  deleteFile(id);
+    else if(a==="newfile")  {newFile(id);state.contextMenu=null;}
+    else if(a==="delfolder")deleteFolder(id);
+  };
+  // 외부 붙여넣기: plain text만 허용해 스타일 오염 방지
+  window._paste=(e)=>{
+    e.preventDefault();
+    const text=e.clipboardData.getData("text/plain");
+    document.execCommand("insertText",false,text);
+    handleTextChange();
+  };
+  window._kd=(e)=>{
+    if((e.ctrlKey||e.metaKey)&&e.key==="b"){e.preventDefault();applyFormat("bold");}
+    if((e.ctrlKey||e.metaKey)&&e.key==="i"){e.preventDefault();applyFormat("italic");}
+    if(e.key==="F5"){e.preventDefault();insertDateTime();}
+    if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();}
+    if(e.key==="Escape"){state.contextMenu=null;state.findOpen=false;render();}
+    if((e.ctrlKey||e.metaKey)&&(e.key==="="||e.key==="+")){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
+    if((e.ctrlKey||e.metaKey)&&e.key==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
+    if(e.key==="Tab"){e.preventDefault();document.execCommand("insertText",false,"    ");}
+    // Ctrl+Z / Ctrl+Y: contenteditable 네이티브 동작에 맡김
+  };
+  document.onclick=(e)=>{if(state.contextMenu&&!e.target.closest("#ctxmenu")){state.contextMenu=null;render();}};
+}
+
+render();
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px;}
+#editor::selection, #editor *::selection{background:#388bfd44;}
+</style>
+</head>
+<body>
+<div style="height:100vh;display:flex;align-items:center;justify-content:center;background:#0f1117;color:#58a6ff;font-family:monospace;">불러오는 중...</div>
+</body>
+</html>
