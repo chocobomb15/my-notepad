@@ -31,7 +31,7 @@ const db   = getFirestore(app);
 
 let state = {
   authed:false, firebaseReady:false,
-  dark:true, folders:[], files:[],
+  dark:false, folders:[], files:[],
   openFolderIds:[], tabs:[], activeTab:null,
   zoom:100, wordWrap:true,
   findOpen:false, findText:"", replaceText:"",
