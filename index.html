@@ -13,7 +13,7 @@ import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc, query, order
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 //  🔑 비밀번호 설정
-const PASSWORD = "1234";
+const PASSWORD = "asdqwe!";
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const firebaseConfig = {
@@ -47,7 +47,7 @@ const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bd
 function genId(){return Math.random().toString(36).slice(2,10)+Date.now().toString(36);}
 
 // ─── Firestore ────────────────────────────
-function uid(){return auth.currentUser?.uid||"default";}
+function uid(){return "shared";}
 function foldersCol(){return collection(db,"users",uid(),"folders");}
 function filesCol()  {return collection(db,"users",uid(),"files");}
 async function saveFolder(f){await setDoc(doc(foldersCol(),f.id),f);}
