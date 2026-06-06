@@ -494,7 +494,14 @@ function render(){
                     background:${state.activeTab===file.id?t.tabA:"transparent"};
                     font-size:12px;color:${state.activeTab===file.id?t.tx:t.mt};">
                   <span style="font-size:10px;">📄</span>
-                  <span ondblclick="window._startRename('${file.id}')" oncontextmenu="event.stopPropagation();window._cm(event,'file','${file.id}')">${esc(file.name)}</span>
+                  ${state.renamingId===file.id
+                    ?`<input id="renameTabInput" value="${esc(state.renamingVal)}"
+                        onclick="event.stopPropagation()"
+                        oninput="window._ri(this.value)"
+                        onkeydown="window._rk(event,'${file.id}')"
+                        onblur="window._rc('${file.id}')"
+                        style="background:transparent;border:none;border-bottom:1px solid ${t.ac};outline:none;color:${t.tx};font-size:12px;font-family:inherit;width:${Math.max(60,file.name.length*8)}px;padding:0;"/>`
+                    :`<span ondblclick="window._startRename('${file.id}')">${esc(file.name)}</span>`}
                   <button class="tab-close-btn" onclick="event.stopPropagation();window._ct('${file.id}')"
                     style="background:none;border:none;cursor:pointer;color:${t.mt};font-size:12px;padding:0 2px;border-radius:2px;"
                     onmouseenter="this.style.color='#f87171'" onmouseleave="this.style.color='${t.mt}'">✕</button>
@@ -613,7 +620,10 @@ function render(){
   window._ri=(v)=>{state.renamingVal=v;};
   window._rk=(e,id)=>{if(e.key==="Enter")commitRename(id);if(e.key==="Escape"){state.renamingId=null;render();}};
   window._rc=(id)=>commitRename(id);
-  window._startRename=(id)=>{state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";render();};
+  window._startRename=(id)=>{
+    state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";render();
+    setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
+  };
   window._cm=(e,type,id)=>{e.preventDefault();e.stopPropagation();state.contextMenu={type,id,x:e.clientX,y:e.clientY};render();};
   window._ctxA=(a,id)=>{
     if     (a==="rename")      {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
