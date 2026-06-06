@@ -494,7 +494,7 @@ function render(){
                     background:${state.activeTab===file.id?t.tabA:"transparent"};
                     font-size:12px;color:${state.activeTab===file.id?t.tx:t.mt};">
                   <span style="font-size:10px;">📄</span>
-                  <span ondblclick="window._startRename('${file.id}')">${esc(file.name)}</span>
+                  <span ondblclick="window._startRename('${file.id}')" oncontextmenu="event.stopPropagation();window._cm(event,'file','${file.id}')">${esc(file.name)}</span>
                   <button class="tab-close-btn" onclick="event.stopPropagation();window._ct('${file.id}')"
                     style="background:none;border:none;cursor:pointer;color:${t.mt};font-size:12px;padding:0 2px;border-radius:2px;"
                     onmouseenter="this.style.color='#f87171'" onmouseleave="this.style.color='${t.mt}'">✕</button>
