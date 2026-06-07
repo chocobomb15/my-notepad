@@ -695,7 +695,10 @@ function render(){
   window._at=(id)=>{
     const ed=document.getElementById("editor");
     if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
+    const prevScroll=document.getElementById("tabBar")?.scrollLeft||0;
     state.activeTab=id;render();
+    const tabBar=document.getElementById("tabBar");
+    if(tabBar) tabBar.scrollLeft=prevScroll;
   };
   window._ct=(fileId)=>{
     const ed=document.getElementById("editor");
