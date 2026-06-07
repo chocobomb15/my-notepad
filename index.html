@@ -516,7 +516,8 @@ function render(){
         <div style="display:flex;align-items:center;gap:5px;padding:5px 12px;background:${t.toolbar};border-bottom:1px solid ${t.bd};flex-shrink:0;">
           <button onclick="window._fmt('bold')"   title="볼드 (Ctrl+B)" style="${fmtC(t)};font-weight:700;color:${t.tx};"><b>B</b></button>
           <button onclick="window._fmt('italic')" title="이탤릭 (Ctrl+I)" style="${fmtC(t)};font-style:italic;color:${t.tx};"><i>I</i></button>
-          <button onclick="window._fmt('strike')" title="취소선" style="${fmtC(t)};text-decoration:line-through;color:${t.tx};"><s>S</s></button>
+          <button onclick="window._fmt('strike')"    title="취소선"           style="${fmtC(t)};text-decoration:line-through;color:${t.tx};"><s>S</s></button>
+          <button onclick="window._fmt('underline')" title="밑줄 (Ctrl+U)"   style="${fmtC(t)};text-decoration:underline;color:${t.tx};">U</button>
           <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
           ${isTxt?`<button onclick="window._cvtMd('${activeFile.id}')" style="${cvtC(t)}">.txt → .md</button>`:""}
           <div style="flex:1;"></div>
@@ -643,6 +644,7 @@ function render(){
   window._kd=(e)=>{
     if((e.ctrlKey||e.metaKey)&&e.key==="b"){e.preventDefault();applyFormat("bold");}
     if((e.ctrlKey||e.metaKey)&&e.key==="i"){e.preventDefault();applyFormat("italic");}
+    if((e.ctrlKey||e.metaKey)&&e.key==="u"){e.preventDefault();applyFormat("underline");}
     if(e.key==="F5"){e.preventDefault();insertDateTime();}
     if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();}
     if(e.key==="Escape"){state.contextMenu=null;state.findOpen=false;render();}
