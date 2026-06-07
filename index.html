@@ -227,6 +227,12 @@ async function moveFolderTo(folderId,targetParentId){
 }
 
 // ─── Folder / File actions ────
+function getAncestorIds(folderId){
+  const result=[];
+  let cur=state.folders.find(f=>f.id===folderId);
+  while(cur&&cur.parentId){result.push(cur.parentId);cur=state.folders.find(f=>f.id===cur.parentId);}
+  return result;
+}
 function toggleFolder(folderId){
   const isOpen=state.openFolderIds.includes(folderId);
   if(isOpen){
@@ -236,9 +242,12 @@ function toggleFolder(folderId){
     state.tabs=state.tabs.filter(t=>!fileIds.includes(t.fileId));
     if(fileIds.includes(state.activeTab)) state.activeTab=state.tabs.length>0?state.tabs[state.tabs.length-1].fileId:null;
   } else {
-    const otherIds=state.files.filter(f=>f.folderId!==folderId).map(f=>f.id);
+    // 상위폴더 ID들을 보존하면서 열기
+    const ancestors=getAncestorIds(folderId);
+    const keepIds=new Set([folderId,...ancestors]);
+    const otherIds=state.files.filter(f=>!keepIds.has(f.folderId)).map(f=>f.id);
     state.tabs=state.tabs.filter(t=>!otherIds.includes(t.fileId));
-    state.openFolderIds=[folderId];
+    state.openFolderIds=[...new Set([...ancestors,folderId])];
     const ff=state.files.filter(f=>f.folderId===folderId);
     const newTabs=ff.filter(f=>!state.tabs.find(t=>t.fileId===f.id)).map(f=>({fileId:f.id,folderId}));
     state.tabs=[...state.tabs,...newTabs];
@@ -246,9 +255,15 @@ function toggleFolder(folderId){
   }
   render();
 }
+function scrollToActiveTab(){
+  setTimeout(()=>{
+    const el=document.querySelector(`[data-file-id="${state.activeTab}"]`);
+    if(el) el.scrollIntoView({behavior:'smooth',block:'nearest',inline:'nearest'});
+  },60);
+}  
 function openFile(file){
   if(!state.tabs.find(t=>t.fileId===file.id)) state.tabs=[...state.tabs,{fileId:file.id,folderId:file.folderId}];
-  state.activeTab=file.id;render();
+  state.activeTab=file.id;render();scrollToActiveTab();
 }
 function closeTab(fileId){
   state.tabs=state.tabs.filter(t=>t.fileId!==fileId);
@@ -549,7 +564,7 @@ function render(){
             ${tabFiles.length===0
               ?`<div style="padding:8px 16px;color:${t.mt};font-size:12px;">파일을 클릭해 여세요</div>`
               :tabFiles.map(file=>`
-                <div onclick="window._at('${file.id}')"
+                <div data-file-id="${file.id}" onclick="window._at('${file.id}')"
                   style="display:flex;align-items:center;gap:6px;padding:8px 14px;cursor:grab;white-space:nowrap;flex-shrink:0;
                     border-right:1px solid ${t.bd};
                     border-bottom:${state.activeTab===file.id?`2px solid ${t.ac}`:"2px solid transparent"};
@@ -670,7 +685,7 @@ function render(){
   window._at=(id)=>{
     const ed=document.getElementById("editor");
     if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
-    state.activeTab=id;render();
+    state.activeTab=id;render();scrollToActiveTab();
   };
   window._ct=(fileId)=>{
     const ed=document.getElementById("editor");
