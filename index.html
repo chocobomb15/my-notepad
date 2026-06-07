@@ -695,7 +695,7 @@ function render(){
   window._at=(id)=>{
     const ed=document.getElementById("editor");
     if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
-    state.activeTab=id;render();scrollToActiveTab();
+    state.activeTab=id;render();
   };
   window._ct=(fileId)=>{
     const ed=document.getElementById("editor");
