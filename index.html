@@ -14,7 +14,7 @@ import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc, query, order
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━
-const PASSWORD = "asdqwe!";
+const PASSWORD = "1234";
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 const firebaseConfig = {
@@ -25,28 +25,28 @@ const firebaseConfig = {
   messagingSenderId: "680380482761",
   appId: "1:680380482761:web:0688b2afda21154ad7b918"
 };
-const app=initializeApp(firebaseConfig), auth=getAuth(app), db=getFirestore(app);
+const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app);
 
-// ─── 폰트 설정 ───────────────
-const FONTS = {
-  nanum:  "'Nanum Gothic', sans-serif",
-  noto:   "'Noto Sans KR', sans-serif",
-  system: "'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue',sans-serif",
-  mono:   "'JetBrains Mono','Fira Code',Consolas,monospace"
+const FONTS={
+  nanum:"'Nanum Gothic',sans-serif",
+  noto:"'Noto Sans KR',sans-serif",
+  system:"'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue',sans-serif",
+  mono:"'JetBrains Mono','Fira Code',Consolas,monospace"
 };
-const FONT_LABELS = {nanum:"나눔고딕", noto:"Noto Sans KR", system:"시스템 기본", mono:"고정폭(코드)"};
+const FONT_LABELS={nanum:"나눔고딕",noto:"Noto Sans KR",system:"시스템 기본",mono:"고정폭(코드)"};
 
-let state = {
-  authed:false, firebaseReady:false,
-  dark:false, folders:[], files:[],
-  openFolderIds:[], tabs:[], activeTab:null,
-  zoom:100, wordWrap:true, font:"nanum",
-  findOpen:false, findText:"", replaceText:"",
+let state={
+  authed:false,firebaseReady:false,
+  dark:false,folders:[],files:[],
+  openFolderIds:[],tabs:[],activeTab:null,
+  zoom:100,wordWrap:true,font:"nanum",
+  findOpen:false,findText:"",replaceText:"",
   contextMenu:null,
-  newFolderMode:false, newFolderName:"", newFolderParentId:null,
-  renamingId:null, renamingVal:"",
-  saveTimer:null, saving:false,
-  pwInput:"", pwError:false, sidebarOpen:true,
+  newFolderMode:false,newFolderName:"",newFolderParentId:null,
+  renamingId:null,renamingVal:"",
+  saveTimer:null,saving:false,
+  pwInput:"",pwError:false,sidebarOpen:true,
+  moveModal:null, // {itemId, itemType:'file'|'folder'}
 };
 
 const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9"];
@@ -74,8 +74,8 @@ async function loadData(){
     const fi1={id:genId(),folderId:f1.id,name:"일기.md",content:"오늘의 일기를 작성해보세요...",createdAt:Date.now(),order:0};
     const fi2={id:genId(),folderId:f2.id,name:"할일목록.md",content:"할일 목록을 작성해보세요.",createdAt:Date.now()+1,order:0};
     await Promise.all([saveFolder(f1),saveFolder(f2),saveFile(fi1),saveFile(fi2)]);
-    state.folders=[f1,f2]; state.files=[fi1,fi2];
-    state.openFolderIds=[f1.id]; state.tabs=[{fileId:fi1.id,folderId:f1.id}]; state.activeTab=fi1.id;
+    state.folders=[f1,f2];state.files=[fi1,fi2];
+    state.openFolderIds=[f1.id];state.tabs=[{fileId:fi1.id,folderId:f1.id}];state.activeTab=fi1.id;
   }
   render();
 }
@@ -88,7 +88,7 @@ async function refreshData(){
 // ─── Auth ────────────────────
 async function tryLogin(){
   if(state.pwInput===PASSWORD){
-    state.pwError=false; localStorage.setItem("notepad_authed","1");
+    state.pwError=false;localStorage.setItem("notepad_authed","1");
     if(!state.firebaseReady) await signInAnonymously(auth);
     else{state.authed=true;await loadData();}
   } else {state.pwError=true;render();setTimeout(()=>document.getElementById("pwInput")?.focus(),50);}
@@ -105,7 +105,7 @@ function textToHTML(content){
   return content.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
     .split("\n").map(l=>`<div>${l||"<br>"}</div>`).join("");
 }
-function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p)\b/i.test(s);}
+function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p|u)\b/i.test(s);}
 function htmlToMarkdown(html){
   let md=html;
   md=md.replace(/<strong>([\s\S]*?)<\/strong>/gi,"**$1**");
@@ -115,6 +115,7 @@ function htmlToMarkdown(html){
   md=md.replace(/<s>([\s\S]*?)<\/s>/gi,"~~$1~~");
   md=md.replace(/<strike>([\s\S]*?)<\/strike>/gi,"~~$1~~");
   md=md.replace(/<del>([\s\S]*?)<\/del>/gi,"~~$1~~");
+  md=md.replace(/<u>([\s\S]*?)<\/u>/gi,"$1");
   md=md.replace(/<br\s*\/?>/gi,"\n");
   md=md.replace(/<div><br\s*\/?><\/div>/gi,"\n");
   md=md.replace(/<\/div><div>/gi,"\n");
@@ -131,7 +132,7 @@ function htmlToText(html){
 }
 function getEditorContent(){const e=document.getElementById("editor");return e?e.innerHTML:"";}
 
-// ─── Text / format actions ───
+// ─── Text / format ───────────
 function handleTextChange(){
   const content=getEditorContent();
   state.files=state.files.map(f=>f.id===state.activeTab?{...f,content}:f);
@@ -196,14 +197,36 @@ async function handleReplace(){
   await saveFile({...file,content:newHTML});updateStatusBar();
 }
 
-// ─── Subfolder helpers ───────
+// ─── Move helpers ─────────────
 function getAllDescendantFolderIds(folderId){
   const result=[folderId];
   state.folders.filter(f=>f.parentId===folderId).forEach(c=>result.push(...getAllDescendantFolderIds(c.id)));
   return result;
 }
 
-// ─── Folder / File actions ───
+// 파일을 다른 폴더로 이동
+async function moveFileTo(fileId,targetFolderId){
+  const maxO=state.files.filter(f=>f.folderId===targetFolderId).reduce((m,f)=>Math.max(m,f.order??0),0);
+  state.files=state.files.map(f=>f.id===fileId?{...f,folderId:targetFolderId,order:maxO+1}:f);
+  state.tabs=state.tabs.map(t=>t.fileId===fileId?{...t,folderId:targetFolderId}:t);
+  const file=state.files.find(f=>f.id===fileId);
+  await saveFile(file);
+  state.moveModal=null;render();
+}
+
+// 폴더를 다른 폴더 아래로 이동
+async function moveFolderTo(folderId,targetParentId){
+  // 자기 자신의 하위로 이동 방지
+  if(folderId===targetParentId) return;
+  if(getAllDescendantFolderIds(folderId).includes(targetParentId)) return;
+  const maxO=state.folders.filter(f=>(f.parentId||null)===(targetParentId||null)).reduce((m,f)=>Math.max(m,f.order??0),0);
+  state.folders=state.folders.map(f=>f.id===folderId?{...f,parentId:targetParentId||null,order:maxO+1}:f);
+  const folder=state.folders.find(f=>f.id===folderId);
+  await saveFolder(folder);
+  state.moveModal=null;render();
+}
+
+// ─── Folder / File actions ────
 function toggleFolder(folderId){
   const isOpen=state.openFolderIds.includes(folderId);
   if(isOpen){
@@ -243,9 +266,8 @@ async function newFolder(parentId=null){
   const name=state.newFolderName.trim();
   if(!name){state.newFolderMode=false;state.newFolderName="";state.newFolderParentId=null;render();return;}
   const siblings=state.folders.filter(f=>(f.parentId||null)===(parentId||null));
-  const maxO=siblings.reduce((m,f)=>Math.max(m,f.order??0),0);
-  const color=COLORS[state.folders.length%COLORS.length];
-  const f={id:genId(),name,color,createdAt:Date.now(),order:maxO+1,parentId:parentId||null};
+  const maxO=siblings.reduce((m,f)=>Math.max(m,f.order??0),-1);
+  const f={id:genId(),name,color:COLORS[state.folders.length%COLORS.length],createdAt:Date.now(),order:maxO+1,parentId:parentId||null};
   state.folders=[...state.folders,f];state.newFolderMode=false;state.newFolderName="";state.newFolderParentId=null;
   await saveFolder(f);render();
 }
@@ -273,26 +295,17 @@ async function deleteFolder(folderId){
 function initSortables(){
   if(!window.Sortable) return;
 
-  // 사이드바 파일 순서 → 탭 순서 동기화
   function syncTabsToFiles(folderId){
-    const ordered=state.files
-      .filter(f=>f.folderId===folderId)
-      .sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
-    const folderIds=new Set(ordered.map(f=>f.id));
-    const otherTabs=state.tabs.filter(t=>!folderIds.has(t.fileId));
-    const folderTabs=ordered.map(f=>state.tabs.find(t=>t.fileId===f.id)).filter(Boolean);
-    state.tabs=[...otherTabs,...folderTabs];
+    const ordered=state.files.filter(f=>f.folderId===folderId).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
+    const ids=new Set(ordered.map(f=>f.id));
+    const others=state.tabs.filter(t=>!ids.has(t.fileId));
+    const mine=ordered.map(f=>state.tabs.find(t=>t.fileId===f.id)).filter(Boolean);
+    state.tabs=[...others,...mine];
   }
-
-  // 탭 순서 → 사이드바 파일 순서 동기화
   async function syncFilesToTabs(){
     const tabFileIds=state.tabs.map(t=>t.fileId);
-    state.files=state.files.map(f=>{
-      const idx=tabFileIds.indexOf(f.id);
-      return idx!==-1?{...f,order:idx}:f;
-    });
-    const changed=state.files.filter(f=>tabFileIds.includes(f.id));
-    await Promise.all(changed.map(f=>saveFile(f)));
+    state.files=state.files.map(f=>{const idx=tabFileIds.indexOf(f.id);return idx!==-1?{...f,order:idx}:f;});
+    await Promise.all(state.files.filter(f=>tabFileIds.includes(f.id)).map(f=>saveFile(f)));
   }
 
   function initFolder(folder){
@@ -302,7 +315,7 @@ function initSortables(){
       const [m]=ff.splice(evt.oldIndex,1);ff.splice(evt.newIndex,0,m);
       const upd=ff.map((f,i)=>({...f,order:i}));
       state.files=state.files.map(f=>upd.find(u=>u.id===f.id)||f);
-      syncTabsToFiles(folder.id);  // ← 탭 순서 동기화
+      syncTabsToFiles(folder.id);
       await Promise.all(upd.map(f=>saveFile(f)));
       render();
     }});
@@ -330,11 +343,12 @@ function initSortables(){
   const tabBar=document.getElementById("tabBar");
   if(tabBar) Sortable.create(tabBar,{animation:150,filter:".tab-close-btn",onEnd:async(evt)=>{
     const [m]=state.tabs.splice(evt.oldIndex,1);state.tabs.splice(evt.newIndex,0,m);
-    await syncFilesToTabs();  // ← 사이드바 순서 동기화
+    await syncFilesToTabs();
     render();
   }});
 }
-// ─── Theme & CSS helpers ─────
+
+// ─── Theme & CSS ─────────────
 function T(){return state.dark
   ?{bg:"#0f1117",sb:"#161b22",tab:"#1c2128",tabA:"#0f1117",bd:"#30363d",tx:"#e6edf3",mt:"#8b949e",ac:"#58a6ff",hv:"#21262d",inp:"#161b22",toolbar:"#161b22"}
   :{bg:"#ffffff",sb:"#f6f8fa",tab:"#f6f8fa",tabA:"#ffffff",bd:"#d0d7de",tx:"#1f2328",mt:"#57606a",ac:"#0969da",hv:"#eaeef2",inp:"#f6f8fa",toolbar:"#f6f8fa"};}
@@ -355,30 +369,81 @@ function updateStatusBar(){
     :`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`;
 }
 
-// ─── Recursive folder renderer ──
-function renderFolderTree(parentId, depth){
+// ─── 이동 모달 렌더링 ─────────
+function renderMoveModal(t,fontFamily){
+  if(!state.moveModal) return "";
+  const {itemId,itemType}=state.moveModal;
+  // 파일이동: 모든 폴더 선택 가능 / 폴더이동: 자기자신·하위폴더 제외
+  const excluded=itemType==="folder"?getAllDescendantFolderIds(itemId):[];
+  const targets=state.folders.filter(f=>!excluded.includes(f.id));
+
+  function folderOptions(parentId,depth){
+    return state.folders
+      .filter(f=>(f.parentId||null)===(parentId||null)&&!excluded.includes(f.id))
+      .sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt))
+      .map(f=>`
+        <div onclick="window._moveTo('${f.id}')"
+          style="display:flex;align-items:center;gap:8px;padding:8px ${12+depth*16}px;cursor:pointer;border-radius:6px;"
+          onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
+          <span style="color:${f.color};">📁</span>
+          <span style="font-size:13px;">${esc(f.name)}</span>
+        </div>
+        ${folderOptions(f.id,depth+1)}`
+      ).join("");
+  }
+
+  // 폴더이동: 루트(최상위)로 이동 옵션 추가
+  const rootOption=itemType==="folder"?`
+    <div onclick="window._moveTo('__root__')"
+      style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;border-radius:6px;"
+      onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
+      <span>🏠</span><span style="font-size:13px;">최상위 (루트)</span>
+    </div>`:"";
+
+  return `
+  <div onclick="window._closeMoveModal()" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:2000;display:flex;align-items:center;justify-content:center;">
+    <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;padding:20px;min-width:260px;max-height:420px;overflow-y:auto;box-shadow:0 16px 40px rgba(0,0,0,0.3);font-family:${fontFamily};">
+      <div style="font-size:14px;font-weight:700;color:${t.tx};margin-bottom:12px;">📂 이동할 폴더 선택</div>
+      <div style="font-size:11px;color:${t.mt};margin-bottom:10px;">${itemType==="file"
+        ?"파일: "+esc(state.files.find(f=>f.id===itemId)?.name||"")
+        :"폴더: "+esc(state.folders.find(f=>f.id===itemId)?.name||"")}</div>
+      <div style="border-top:1px solid ${t.bd};padding-top:8px;">
+        ${rootOption}
+        ${folderOptions(null,0)}
+        ${targets.length===0&&itemType!=="folder"?`<div style="color:${t.mt};font-size:12px;padding:8px;">이동 가능한 폴더가 없습니다.</div>`:""}
+      </div>
+      <button onclick="window._closeMoveModal()" style="${btnC(t)};margin-top:12px;width:100%;text-align:center;">취소</button>
+    </div>
+  </div>`;
+}
+
+// ─── Recursive folder renderer ─
+function renderFolderTree(parentId,depth){
+  const t=T();
   const children=state.folders.filter(f=>(f.parentId||null)===(parentId||null))
     .sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
   if(!children.length) return "";
-  const containerId=parentId?`subList-${parentId}`:`folderList-root`;
-  const t=T();
   const items=children.map(folder=>{
     const isOpen=state.openFolderIds.includes(folder.id);
     const ff=state.files.filter(f=>f.folderId===folder.id).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
     const pad=12+depth*14;
-    const hasChildren=state.folders.some(f=>f.parentId===folder.id);
     return `<div>
       <div class="folder-row" onclick="window._tf('${folder.id}')" oncontextmenu="window._cm(event,'folder','${folder.id}')"
         style="display:flex;align-items:center;padding:6px 8px 6px ${pad}px;cursor:pointer;gap:4px;border-radius:4px;margin:1px 6px;"
         onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
         ${dh}
-        <span style="font-size:10px;color:${t.mt};">${(isOpen&&(ff.length||hasChildren))?"▾":"▸"}</span>
+        <span style="font-size:10px;color:${t.mt};">${isOpen?"▾":"▸"}</span>
         <span style="color:${folder.color};font-size:${depth>0?12:13}px;">📁</span>
         <span style="font-size:${depth>0?11:12}px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(folder.name)}</span>
         <span style="font-size:10px;color:${t.mt};">${ff.length}</span>
         <button onclick="event.stopPropagation();window._nf('${folder.id}')" style="${btnC(t)};font-size:11px;padding:1px 5px;">+</button>
       </div>
       ${isOpen?`
+        <!-- 하위폴더 먼저 표시 -->
+        <div id="subList-${folder.id}">
+          ${renderFolderTree(folder.id,depth+1)}
+        </div>
+        <!-- 파일 목록 -->
         <div id="fileList-${folder.id}">
           ${ff.map(file=>`
             <div class="file-row" onclick="window._of('${file.id}')" oncontextmenu="window._cm(event,'file','${file.id}')"
@@ -393,14 +458,11 @@ function renderFolderTree(parentId, depth){
                 ?`<input id="renameInput" value="${esc(state.renamingVal)}" onclick="event.stopPropagation()" oninput="window._ri(this.value)" onkeydown="window._rk(event,'${file.id}')" onblur="window._rc('${file.id}')" style="${inpC(t)};flex:1;font-size:11px;"/>`
                 :`<span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(file.name)}</span>`}
             </div>`).join("")}
-        </div>
-        <div id="subList-${folder.id}">
-          ${renderFolderTree(folder.id, depth+1)}
         </div>`:""}
     </div>`;
   }).join("");
-  if(parentId) return items; // 하위폴더는 컨테이너 없이 바로 반환 (부모가 만듦)
-  return `<div id="${containerId}">${items}</div>`;
+  if(parentId) return items;
+  return `<div id="folderList-root">${items}</div>`;
 }
 
 // ─── Render ──────────────────
@@ -441,9 +503,8 @@ function render(){
       <button onclick="window._btn('sidebar')" style="${btnC(t)};padding:3px 7px;">${state.sidebarOpen?"◀":"▶"}</button>
       <span style="font-size:15px;font-weight:700;letter-spacing:2px;color:${t.ac};">✎ NOTEPAD</span>
       <div style="flex:1"></div>
-      <!-- 폰트 선택 -->
       <select onchange="window._setFont(this.value)" style="${inpC(t)};cursor:pointer;padding:3px 6px;">
-        ${Object.entries(FONT_LABELS).map(([k,v])=>`<option value="${k}" ${state.font===k?"selected":""}>${v}</option>`).join("")}
+        ${Object.entries(FONT_LABELS).map(([k,v])=>`<option value="${k}"${state.font===k?" selected":""}>${v}</option>`).join("")}
       </select>
       <button onclick="window._btn('find')" title="찾기/바꾸기 (Ctrl+H)" style="${btnC(t)}">🔍</button>
       <button onclick="window._btn('wrap')" style="${btnC(t)};background:${state.wordWrap?t.ac:"transparent"};color:${state.wordWrap?"#fff":t.mt};">↩</button>
@@ -473,7 +534,7 @@ function render(){
               style="${inpC(t)};width:100%;box-sizing:border-box;"/>
           </div>`:""}
         <div style="flex:1;overflow-y:auto;">
-          ${renderFolderTree(null, 0)}
+          ${renderFolderTree(null,0)}
         </div>
       </div>`:""}
 
@@ -483,7 +544,7 @@ function render(){
         <!-- Tabs with scroll arrows -->
         <div style="display:flex;align-items:stretch;background:${t.tab};border-bottom:1px solid ${t.bd};flex-shrink:0;">
           <button onclick="document.getElementById('tabBar').scrollLeft-=200"
-            style="background:${t.tab};border:none;border-right:1px solid ${t.bd};cursor:pointer;padding:0 10px;color:${t.mt};flex-shrink:0;font-size:12px;" title="왼쪽으로">◀</button>
+            style="background:${t.tab};border:none;border-right:1px solid ${t.bd};cursor:pointer;padding:0 10px;color:${t.mt};flex-shrink:0;font-size:12px;">◀</button>
           <div id="tabBar" style="display:flex;overflow-x:auto;flex:1;scrollbar-width:none;">
             ${tabFiles.length===0
               ?`<div style="padding:8px 16px;color:${t.mt};font-size:12px;">파일을 클릭해 여세요</div>`
@@ -502,23 +563,23 @@ function render(){
                         onkeydown="window._rk(event,'${file.id}')"
                         onblur="window._rc('${file.id}')"
                         style="background:transparent;border:none;border-bottom:1px solid ${t.ac};outline:none;color:${t.tx};font-size:12px;font-family:inherit;width:${Math.max(60,file.name.length*8)}px;padding:0;"/>`
-                    :`<span ondblclick="window._startRename('${file.id}')">${esc(file.name)}</span>`}
+                    :`<span ondblclick="window._startRename('${file.id}')" oncontextmenu="event.stopPropagation();window._cm(event,'file','${file.id}')">${esc(file.name)}</span>`}
                   <button class="tab-close-btn" onclick="event.stopPropagation();window._ct('${file.id}')"
                     style="background:none;border:none;cursor:pointer;color:${t.mt};font-size:12px;padding:0 2px;border-radius:2px;"
                     onmouseenter="this.style.color='#f87171'" onmouseleave="this.style.color='${t.mt}'">✕</button>
                 </div>`).join("")}
           </div>
           <button onclick="document.getElementById('tabBar').scrollLeft+=200"
-            style="background:${t.tab};border:none;border-left:1px solid ${t.bd};cursor:pointer;padding:0 10px;color:${t.mt};flex-shrink:0;font-size:12px;" title="오른쪽으로">▶</button>
+            style="background:${t.tab};border:none;border-left:1px solid ${t.bd};cursor:pointer;padding:0 10px;color:${t.mt};flex-shrink:0;font-size:12px;">▶</button>
         </div>
 
         <!-- Formatting toolbar -->
         ${activeFile?`
         <div style="display:flex;align-items:center;gap:5px;padding:5px 12px;background:${t.toolbar};border-bottom:1px solid ${t.bd};flex-shrink:0;">
-          <button onclick="window._fmt('bold')"   title="볼드 (Ctrl+B)" style="${fmtC(t)};font-weight:700;color:${t.tx};"><b>B</b></button>
-          <button onclick="window._fmt('italic')" title="이탤릭 (Ctrl+I)" style="${fmtC(t)};font-style:italic;color:${t.tx};"><i>I</i></button>
-          <button onclick="window._fmt('strike')"    title="취소선"           style="${fmtC(t)};text-decoration:line-through;color:${t.tx};"><s>S</s></button>
+          <button onclick="window._fmt('bold')"      title="볼드 (Ctrl+B)"   style="${fmtC(t)};font-weight:700;color:${t.tx};"><b>B</b></button>
+          <button onclick="window._fmt('italic')"    title="이탤릭 (Ctrl+I)" style="${fmtC(t)};font-style:italic;color:${t.tx};"><i>I</i></button>
           <button onclick="window._fmt('underline')" title="밑줄 (Ctrl+U)"   style="${fmtC(t)};text-decoration:underline;color:${t.tx};">U</button>
+          <button onclick="window._fmt('strike')"    title="취소선"           style="${fmtC(t)};text-decoration:line-through;color:${t.tx};"><s>S</s></button>
           <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
           ${isTxt?`<button onclick="window._cvtMd('${activeFile.id}')" style="${cvtC(t)}">.txt → .md</button>`:""}
           <div style="flex:1;"></div>
@@ -543,8 +604,7 @@ function render(){
               spellcheck="false"
               style="flex:1;background:${t.bg};color:${t.tx};border:none;outline:none;overflow-y:auto;
                 padding:20px 28px;font-size:${Math.round(14*state.zoom/100)}px;line-height:1.85;
-                font-family:${fontFamily};
-                word-break:${state.wordWrap?"break-word":"normal"};
+                font-family:${fontFamily};word-break:${state.wordWrap?"break-word":"normal"};
                 overflow-wrap:${state.wordWrap?"break-word":"normal"};
                 white-space:${state.wordWrap?"pre-wrap":"pre"};
                 caret-color:${t.ac};cursor:text;box-sizing:border-box;"
@@ -568,21 +628,27 @@ function render(){
     ${state.contextMenu?`
       <div id="ctxmenu" style="position:fixed;top:${state.contextMenu.y}px;left:${state.contextMenu.x}px;
         background:${t.sb};border:1px solid ${t.bd};border-radius:6px;z-index:1000;min-width:150px;
-        box-shadow:0 8px 24px rgba(0,0,0,0.4);overflow:hidden;font-family:${fontFamily};">
+        box-shadow:0 8px 24px rgba(0,0,0,0.3);overflow:hidden;font-family:${fontFamily};">
         ${state.contextMenu.type==="file"
           ?`<div onclick="window._ctxA('rename','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">이름 바꾸기</div>
+             <div onclick="window._ctxA('movefile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">다른 폴더로 이동</div>
              <div onclick="window._ctxA('delfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">삭제</div>`
           :`<div onclick="window._ctxA('newfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 파일</div>
              <div onclick="window._ctxA('newsubfolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 하위폴더</div>
+             <div onclick="window._ctxA('movefolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">다른 위치로 이동</div>
              <div onclick="window._ctxA('delfolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">폴더 삭제</div>`}
       </div>`:""}
+
+    <!-- 이동 모달 -->
+    ${renderMoveModal(t,fontFamily)}
   </div>`;
 
   if(activeFile){const ed=document.getElementById("editor");if(ed)ed.innerHTML=textToHTML(activeFile.content);}
-  if(state.renamingId)    setTimeout(()=>{const el=document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
+  if(state.renamingId) setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
   if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
   setTimeout(initSortables,0);
 
+  // ── Handlers ────────────────
   window._pwi=(v)=>{state.pwInput=v;};window._pwLogin=tryLogin;
   window._btn=(a)=>{
     if     (a==="dark")          {state.dark=!state.dark;render();}
@@ -633,7 +699,15 @@ function render(){
     else if(a==="newfile")     {newFile(id);state.contextMenu=null;}
     else if(a==="delfolder")   deleteFolder(id);
     else if(a==="newsubfolder"){state.newFolderMode=true;state.newFolderParentId=id;state.contextMenu=null;render();}
+    else if(a==="movefile")    {state.moveModal={itemId:id,itemType:"file"};state.contextMenu=null;render();}
+    else if(a==="movefolder")  {state.moveModal={itemId:id,itemType:"folder"};state.contextMenu=null;render();}
   };
+  window._moveTo=(targetId)=>{
+    const {itemId,itemType}=state.moveModal;
+    if(itemType==="file")   moveFileTo(itemId, targetId);
+    else                    moveFolderTo(itemId, targetId==="__root__"?null:targetId);
+  };
+  window._closeMoveModal=()=>{state.moveModal=null;render();};
   window._paste=(e)=>{
     e.preventDefault();
     const text=e.clipboardData.getData("text/plain");
@@ -648,12 +722,14 @@ function render(){
     if((e.ctrlKey||e.metaKey)&&e.key==="u"){e.preventDefault();applyFormat("underline");}
     if(e.key==="F5"){e.preventDefault();insertDateTime();}
     if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();}
-    if(e.key==="Escape"){state.contextMenu=null;state.findOpen=false;render();}
+    if(e.key==="Escape"){state.contextMenu=null;state.findOpen=false;state.moveModal=null;render();}
     if((e.ctrlKey||e.metaKey)&&(e.key==="="||e.key==="+")){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
     if((e.ctrlKey||e.metaKey)&&e.key==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
     if(e.key==="Tab"){e.preventDefault();document.execCommand("insertText",false,"    ");}
   };
-  document.onclick=(e)=>{if(state.contextMenu&&!e.target.closest("#ctxmenu")){state.contextMenu=null;render();}};
+  document.onclick=(e)=>{
+    if(state.contextMenu&&!e.target.closest("#ctxmenu")){state.contextMenu=null;render();}
+  };
 }
 
 render();
