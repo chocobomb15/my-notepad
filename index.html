@@ -248,9 +248,9 @@ function toggleFolder(folderId){
     const otherIds=state.files.filter(f=>!keepIds.has(f.folderId)).map(f=>f.id);
     state.tabs=state.tabs.filter(t=>!otherIds.includes(t.fileId));
     state.openFolderIds=[...new Set([...ancestors,folderId])];
+// 다른 폴더 탭 모두 닫고 이 폴더 파일만 열기
     const ff=state.files.filter(f=>f.folderId===folderId);
-    const newTabs=ff.filter(f=>!state.tabs.find(t=>t.fileId===f.id)).map(f=>({fileId:f.id,folderId}));
-    state.tabs=[...state.tabs,...newTabs];
+    state.tabs=ff.map(f=>({fileId:f.id,folderId}));
     state.activeTab=ff.length>0?ff[0].id:null;
   }
   render();
