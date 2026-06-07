@@ -258,7 +258,7 @@ function toggleFolder(folderId){
 function scrollToActiveTab(){
   setTimeout(()=>{
     const el=document.querySelector(`[data-file-id="${state.activeTab}"]`);
-    if(el) el.scrollIntoView({behavior:'smooth',block:'nearest',inline:'nearest'});
+    if(el) el.scrollIntoView({behavior:'instant',block:'nearest',inline:'nearest'});
   },60);
 }  
 function openFile(file){
