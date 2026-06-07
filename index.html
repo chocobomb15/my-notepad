@@ -257,10 +257,20 @@ function toggleFolder(folderId){
 }
 function scrollToActiveTab(){
   setTimeout(()=>{
+    const tabBar=document.getElementById("tabBar");
     const el=document.querySelector(`[data-file-id="${state.activeTab}"]`);
-    if(el) el.scrollIntoView({behavior:'instant',block:'nearest',inline:'nearest'});
+    if(!tabBar||!el) return;
+    const barLeft=tabBar.scrollLeft;
+    const barRight=barLeft+tabBar.clientWidth;
+    const elLeft=el.offsetLeft;
+    const elRight=elLeft+el.offsetWidth;
+    // 탭이 이미 보이는 영역 안에 있으면 스크롤 안 함
+    if(elLeft>=barLeft && elRight<=barRight) return;
+    // 화면 밖에 있을 때만 최소한으로 스크롤
+    if(elLeft<barLeft) tabBar.scrollLeft=elLeft;
+    else tabBar.scrollLeft=elRight-tabBar.clientWidth;
   },60);
-}  
+}
 function openFile(file){
   if(!state.tabs.find(t=>t.fileId===file.id)) state.tabs=[...state.tabs,{fileId:file.id,folderId:file.folderId}];
   state.activeTab=file.id;render();scrollToActiveTab();
