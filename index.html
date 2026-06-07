@@ -149,7 +149,8 @@ function handleTextChange(){
 function applyFormat(type){
   const ed=document.getElementById("editor");if(!ed)return;
   ed.focus();
-  document.execCommand(type==="bold"?"bold":type==="italic"?"italic":"strikeThrough",false,null);
+  const cmd=type==="bold"?"bold":type==="italic"?"italic":type==="underline"?"underline":"strikeThrough";
+  document.execCommand(cmd,false,null);
   handleTextChange();
 }
 function insertDateTime(){
