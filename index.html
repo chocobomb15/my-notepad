@@ -46,7 +46,7 @@ let state={
   renamingId:null,renamingVal:"",
   saveTimer:null,saving:false,
   pwInput:"",pwError:false,sidebarOpen:true,
-  moveModal:null, // {itemId, itemType:'file'|'folder'}
+  moveModal:null,scrollPositions:{},
 };
 
 const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9"];
@@ -694,11 +694,16 @@ function render(){
   window._nf=newFile;
   window._at=(id)=>{
     const ed=document.getElementById("editor");
-    if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
+    if(ed&&state.activeTab){
+      state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
+      state.scrollPositions={...state.scrollPositions,[state.activeTab]:ed.scrollTop};
+    }
     const prevScroll=document.getElementById("tabBar")?.scrollLeft||0;
     state.activeTab=id;render();
     const tabBar=document.getElementById("tabBar");
     if(tabBar) tabBar.scrollLeft=prevScroll;
+    const newEd=document.getElementById("editor");
+    if(newEd) newEd.scrollTop=state.scrollPositions[id]||0;
   };
   window._ct=(fileId)=>{
     const ed=document.getElementById("editor");
