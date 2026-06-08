@@ -315,6 +315,11 @@ async function deleteFolder(folderId){
   state.contextMenu=null;
   await Promise.all([...fileIds.map(id=>delFile(id)),...allIds.map(id=>delFolder(id))]);render();
 }
+async function changeFolderColor(folderId, color){
+  state.folders=state.folders.map(f=>f.id===folderId?{...f,color}:f);
+  await saveFolder(state.folders.find(f=>f.id===folderId));
+  state.contextMenu=null; render();
+}
 
 // ─── Drag-and-drop ───────────
 function initSortables(){
@@ -661,7 +666,16 @@ function render(){
           :`<div onclick="window._ctxA('newfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 파일</div>
              <div onclick="window._ctxA('newsubfolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 하위폴더</div>
              <div onclick="window._ctxA('movefolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">다른 위치로 이동</div>
-             <div onclick="window._ctxA('delfolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">폴더 삭제</div>`}
+             <div style="padding:6px 16px;border-top:1px solid ${t.bd};">
+               <div style="font-size:10px;color:${t.mt};margin-bottom:6px;">폴더 색상</div>
+               <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                 ${["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9","#94a3b8","#f472b6","#4ade80","#fb7185"].map(color=>`
+                   <div onclick="window._changeColor('${state.contextMenu.id}','${color}')"
+                     style="width:18px;height:18px;border-radius:50%;background:${color};cursor:pointer;border:2px solid ${state.folders.find(f=>f.id===state.contextMenu.id)?.color===color?"#fff":"transparent"};"
+                     title="${color}"></div>`).join("")}
+               </div>
+             </div>
+             <div onclick="window._ctxA('delfolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;border-top:1px solid ${t.bd};" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">폴더 삭제</div>`}
       </div>`:""}
 
     <!-- 이동 모달 -->
@@ -741,6 +755,7 @@ function render(){
     else                    moveFolderTo(itemId, targetId==="__root__"?null:targetId);
   };
   window._closeMoveModal=()=>{state.moveModal=null;render();};
+  window._changeColor=(id,color)=>changeFolderColor(id,color);
   window._paste=(e)=>{
     e.preventDefault();
     const text=e.clipboardData.getData("text/plain");
