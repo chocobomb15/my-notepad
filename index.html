@@ -463,7 +463,7 @@ function renderFolderTree(parentId,depth){
         onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
         ${dh}
         <span style="font-size:10px;color:${t.mt};">${isOpen?"▾":"▸"}</span>
-        <span style="color:${folder.color};font-size:${depth>0?12:13}px;">📁</span>
+        <span style="position:relative;display:inline-block;font-size:${depth>0?12:13}px;">📁<span style="position:absolute;bottom:-1px;right:-3px;width:8px;height:8px;border-radius:50%;background:${folder.color};border:2px solid ${t.sb};"></span></span>
         <span style="font-size:${depth>0?11:12}px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(folder.name)}</span>
         <span style="font-size:10px;color:${t.mt};">${ff.length}</span>
         <button onclick="event.stopPropagation();window._nf('${folder.id}')" style="${btnC(t)};font-size:11px;padding:1px 5px;">+</button>
