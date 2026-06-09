@@ -177,17 +177,27 @@ async function convertToMd(fileId){
 
 // ─── Find / Replace ──────────
 function handleFind(){
-  const file=state.files.find(f=>f.id===state.activeTab);if(!file||!state.findText)return;
-  const ed=document.getElementById("editor");if(!ed)return;
-  const idx=ed.innerText.indexOf(state.findText);if(idx===-1)return;
-  const range=document.createRange(),sel=window.getSelection();
-  let cc=0,found=false;
-  function walk(node){
-    if(found)return;
-    if(node.nodeType===3){const e=cc+node.length;if(cc<=idx&&idx<e){range.setStart(node,idx-cc);range.setEnd(node,Math.min(idx-cc+state.findText.length,node.length));found=true;}cc+=node.length;}
-    else node.childNodes.forEach(walk);
+  const ed=document.getElementById("editor");if(!ed||!state.findText)return;
+  ed.focus();
+  const walker=document.createTreeWalker(ed,NodeFilter.SHOW_TEXT);
+  const nodes=[];
+  let node;
+  while(node=walker.nextNode()) nodes.push(node);
+  let fullText="",offsets=[];
+  nodes.forEach(n=>{offsets.push(fullText.length);fullText+=n.textContent;});
+  const idx=fullText.indexOf(state.findText);if(idx===-1)return;
+  const endIdx=idx+state.findText.length;
+  let startNode=null,startOff=0,endNode=null,endOff=0;
+  for(let i=0;i<nodes.length;i++){
+    const s=offsets[i],e=s+nodes[i].textContent.length;
+    if(!startNode&&idx>=s&&idx<e){startNode=nodes[i];startOff=idx-s;}
+    if(!endNode&&endIdx>=s&&endIdx<=e){endNode=nodes[i];endOff=endIdx-s;}
   }
-  walk(ed);if(found){sel.removeAllRanges();sel.addRange(range);ed.focus();}
+  if(startNode&&endNode){
+    const range=document.createRange();
+    range.setStart(startNode,startOff);range.setEnd(endNode,endOff);
+    const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);
+  }
 }
 async function handleReplace(){
   const file=state.files.find(f=>f.id===state.activeTab);if(!file||!state.findText)return;
