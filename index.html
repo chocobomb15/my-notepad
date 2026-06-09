@@ -40,7 +40,7 @@ let state={
   dark:false,folders:[],files:[],
   openFolderIds:[],tabs:[],activeTab:null,
   zoom:100,wordWrap:true,font:"nanum",
-  findOpen:false,findText:"",replaceText:"",findDirection:'down',
+  findOpen:false,findText:"",replaceText:"",findDirection:'down',findIndex:-1,
   contextMenu:null,
   newFolderMode:false,newFolderName:"",newFolderParentId:null,
   renamingId:null,renamingVal:"",
@@ -191,26 +191,13 @@ function handleFind(dir){
     matches.push(idx);i=idx+1;
   }
   const countEl=document.getElementById("findCount");
-  if(!matches.length){if(countEl)countEl.textContent="없음";return;}
-  const sel=window.getSelection();
-  let curStart=0,curEnd=0;
-  if(sel.rangeCount>0){
-    const r=sel.getRangeAt(0);
-    for(let i=0;i<nodes.length;i++){
-      if(nodes[i]===r.startContainer) curStart=offsets[i]+r.startOffset;
-      if(nodes[i]===r.endContainer)   curEnd  =offsets[i]+r.endOffset;
-    }
-  }
-  let targetIdx;
+  if(!matches.length){if(countEl)countEl.textContent="없음";state.findIndex=-1;return;}
   if(direction==='down'){
-    targetIdx=matches.findIndex(m=>m>=curEnd);
-    if(targetIdx===-1) targetIdx=0;
+    state.findIndex=state.findIndex===-1?0:(state.findIndex+1)%matches.length;
   } else {
-    let found=-1;
-    for(let i=matches.length-1;i>=0;i--){if(matches[i]<curStart){found=i;break;}}
-    targetIdx=found===-1?matches.length-1:found;
+    state.findIndex=state.findIndex===-1?matches.length-1:(state.findIndex-1+matches.length)%matches.length;
   }
-  const ms=matches[targetIdx],me=ms+state.findText.length;
+  const ms=matches[state.findIndex],me=ms+state.findText.length;
   let sn=null,so=0,en=null,eo=0;
   for(let i=0;i<nodes.length;i++){
     const s=offsets[i],e=s+nodes[i].textContent.length;
@@ -220,7 +207,8 @@ function handleFind(dir){
   if(sn&&en){
     const range=document.createRange();
     range.setStart(sn,so);range.setEnd(en,eo);
-    sel.removeAllRanges();sel.addRange(range);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
     const edEl=document.getElementById("editor");
     const nodeEl=sn.parentElement;
     if(edEl&&nodeEl){
@@ -229,7 +217,7 @@ function handleFind(dir){
     }
     setTimeout(()=>document.getElementById("findInput")?.focus(),0);
   }
-  if(countEl) countEl.textContent=`${targetIdx+1} / ${matches.length}`;
+  if(countEl) countEl.textContent=`${state.findIndex+1} / ${matches.length}`;
 }
 async function handleReplace(){
   const file=state.files.find(f=>f.id===state.activeTab);if(!file||!state.findText)return;
@@ -775,7 +763,7 @@ function render(){
   window._export=exportFile;
   window._cvtMd=convertToMd;
   window._refresh=refreshData;
-  window._fi=(v,w)=>{if(w==="find")state.findText=v;else state.replaceText=v;};
+  window._fi=(v,w)=>{if(w==="find"){if(v!==state.findText)state.findIndex=-1;state.findText=v;}else state.replaceText=v;};
   window._nfi=(v)=>{state.newFolderName=v;};
   window._nfk=(e)=>{if(e.key==="Enter")newFolder(state.newFolderParentId);if(e.key==="Escape"){state.newFolderMode=false;state.newFolderName="";state.newFolderParentId=null;render();}};
   window._ri=(v)=>{state.renamingVal=v;};
