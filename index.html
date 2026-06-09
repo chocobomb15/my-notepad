@@ -658,8 +658,7 @@ function render(){
             <button onclick="window._findDir('down')" title="다음 찾기 (Enter)"       style="${actC(t)};padding:3px 7px;">▼</button>
             <input value="${esc(state.replaceText)}" placeholder="바꾸기..." oninput="window._fi(this.value,'replace')" onkeydown="if(event.key==='Enter')window._btn('replace_exec')" style="${inpC(t)};width:150px;"/>
             <button onclick="window._btn('replace_exec')" style="${actC(t)}">모두 바꾸기</button>
-            <button onclick="window._btn('find')" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>
-          </div>`:""}
+            <button onclick="const st=document.getElementById('editor')?.scrollTop||0;state.findOpen=false;render();const ed=document.getElementById('editor');if(ed)ed.scrollTop=st;" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>          </div>`:""}
 
         <!-- Editor -->
         ${activeFile
@@ -728,7 +727,7 @@ function render(){
     else if(a==="wrap")          {state.wordWrap=!state.wordWrap;render();}
     else if(a==="zm-")           {state.zoom=Math.max(state.zoom-10,50);render();}
     else if(a==="zm+")           {state.zoom=Math.min(state.zoom+10,200);render();}
-    else if(a==="find")          {state.findOpen=!state.findOpen;render();}
+    else if(a==="find")          {const st=document.getElementById("editor")?.scrollTop||0;state.findOpen=!state.findOpen;render();if(state.findOpen)setTimeout(()=>document.getElementById("findInput")?.focus(),50);else{const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;}}
     else if(a==="find_exec")     handleFind();
     else if(a==="replace_exec")  handleReplace();
     else if(a==="newfolder")     {state.newFolderMode=true;state.newFolderParentId=null;render();}
@@ -805,7 +804,11 @@ function render(){
     if((e.ctrlKey||e.metaKey)&&e.key==="u"){e.preventDefault();applyFormat("underline");}
     if(e.key==="F5"){e.preventDefault();insertDateTime();}
     if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();setTimeout(()=>document.getElementById("findInput")?.focus(),50);}
-    if(e.key==="Escape"){state.contextMenu=null;state.findOpen=false;state.moveModal=null;render();}
+    if(e.key==="Escape"){
+      const st=document.getElementById("editor")?.scrollTop||0;
+      state.contextMenu=null;state.findOpen=false;state.moveModal=null;render();
+      const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
+    }
     if((e.ctrlKey||e.metaKey)&&(e.key==="="||e.key==="+")){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
     if((e.ctrlKey||e.metaKey)&&e.key==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
     if(e.key==="Tab"){e.preventDefault();document.execCommand("insertText",false,"    ");}
