@@ -658,7 +658,7 @@ function render(){
             <button onclick="window._findDir('down')" title="다음 찾기 (Enter)"       style="${actC(t)};padding:3px 7px;">▼</button>
             <input value="${esc(state.replaceText)}" placeholder="바꾸기..." oninput="window._fi(this.value,'replace')" onkeydown="if(event.key==='Enter')window._btn('replace_exec')" style="${inpC(t)};width:150px;"/>
             <button onclick="window._btn('replace_exec')" style="${actC(t)}">모두 바꾸기</button>
-            <button onclick="const st=document.getElementById('editor')?.scrollTop||0;state.findOpen=false;render();const ed=document.getElementById('editor');if(ed)ed.scrollTop=st;" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>          </div>`:""}
+            <button onclick="window._btn('find')" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>          </div>`:""}
 
         <!-- Editor -->
         ${activeFile
