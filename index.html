@@ -40,7 +40,7 @@ let state={
   dark:false,folders:[],files:[],
   openFolderIds:[],tabs:[],activeTab:null,
   zoom:100,wordWrap:true,font:"nanum",
-  findOpen:false,findText:"",replaceText:"",
+  findOpen:false,findText:"",replaceText:"",findDirection:'down',
   contextMenu:null,
   newFolderMode:false,newFolderName:"",newFolderParentId:null,
   renamingId:null,renamingVal:"",
@@ -176,28 +176,55 @@ async function convertToMd(fileId){
 }
 
 // ─── Find / Replace ──────────
-function handleFind(){
+function handleFind(dir){
   const ed=document.getElementById("editor");if(!ed||!state.findText)return;
   ed.focus();
+  if(dir) state.findDirection=dir;
+  const direction=state.findDirection||'down';
   const walker=document.createTreeWalker(ed,NodeFilter.SHOW_TEXT);
-  const nodes=[];
-  let node;
-  while(node=walker.nextNode()) nodes.push(node);
+  const nodes=[];let nd;
+  while(nd=walker.nextNode()) nodes.push(nd);
   let fullText="",offsets=[];
   nodes.forEach(n=>{offsets.push(fullText.length);fullText+=n.textContent;});
-  const idx=fullText.indexOf(state.findText);if(idx===-1)return;
-  const endIdx=idx+state.findText.length;
-  let startNode=null,startOff=0,endNode=null,endOff=0;
+  const matches=[];
+  for(let i=0;i<=fullText.length-state.findText.length;){
+    const idx=fullText.indexOf(state.findText,i);if(idx===-1)break;
+    matches.push(idx);i=idx+1;
+  }
+  const countEl=document.getElementById("findCount");
+  if(!matches.length){if(countEl)countEl.textContent="없음";return;}
+  const sel=window.getSelection();
+  let curStart=0,curEnd=0;
+  if(sel.rangeCount>0){
+    const r=sel.getRangeAt(0);
+    for(let i=0;i<nodes.length;i++){
+      if(nodes[i]===r.startContainer) curStart=offsets[i]+r.startOffset;
+      if(nodes[i]===r.endContainer)   curEnd  =offsets[i]+r.endOffset;
+    }
+  }
+  let targetIdx;
+  if(direction==='down'){
+    targetIdx=matches.findIndex(m=>m>=curEnd);
+    if(targetIdx===-1) targetIdx=0;
+  } else {
+    let found=-1;
+    for(let i=matches.length-1;i>=0;i--){if(matches[i]<curStart){found=i;break;}}
+    targetIdx=found===-1?matches.length-1:found;
+  }
+  const ms=matches[targetIdx],me=ms+state.findText.length;
+  let sn=null,so=0,en=null,eo=0;
   for(let i=0;i<nodes.length;i++){
     const s=offsets[i],e=s+nodes[i].textContent.length;
-    if(!startNode&&idx>=s&&idx<e){startNode=nodes[i];startOff=idx-s;}
-    if(!endNode&&endIdx>=s&&endIdx<=e){endNode=nodes[i];endOff=endIdx-s;}
+    if(!sn&&ms>=s&&ms<=e){sn=nodes[i];so=ms-s;}
+    if(!en&&me>=s&&me<=e){en=nodes[i];eo=me-s;}
   }
-  if(startNode&&endNode){
+  if(sn&&en){
     const range=document.createRange();
-    range.setStart(startNode,startOff);range.setEnd(endNode,endOff);
-    const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);
+    range.setStart(sn,so);range.setEnd(en,eo);
+    sel.removeAllRanges();sel.addRange(range);
+    sn.parentElement?.scrollIntoView({block:'nearest'});
   }
+  if(countEl) countEl.textContent=`${targetIdx+1} / ${matches.length}`;
 }
 async function handleReplace(){
   const file=state.files.find(f=>f.id===state.activeTab);if(!file||!state.findText)return;
@@ -630,9 +657,13 @@ function render(){
         <!-- Find/Replace -->
         ${state.findOpen?`
           <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:${t.sb};border-bottom:1px solid ${t.bd};flex-shrink:0;flex-wrap:wrap;">
-            <input value="${esc(state.findText)}" placeholder="찾기..." oninput="window._fi(this.value,'find')" onkeydown="if(event.key==='Enter')window._btn('find_exec')" style="${inpC(t)};width:150px;"/>
+            <input value="${esc(state.findText)}" placeholder="찾기..." oninput="window._fi(this.value,'find')"
+              onkeydown="if(event.key==='Enter'){event.shiftKey?window._findDir('up'):window._findDir('down');}"
+              style="${inpC(t)};width:150px;"/>
+            <span id="findCount" style="font-size:11px;color:${t.mt};min-width:40px;text-align:center;"></span>
+            <button onclick="window._findDir('up')"   title="이전 찾기 (Shift+Enter)" style="${actC(t)};padding:3px 7px;">▲</button>
+            <button onclick="window._findDir('down')" title="다음 찾기 (Enter)"       style="${actC(t)};padding:3px 7px;">▼</button>
             <input value="${esc(state.replaceText)}" placeholder="바꾸기..." oninput="window._fi(this.value,'replace')" onkeydown="if(event.key==='Enter')window._btn('replace_exec')" style="${inpC(t)};width:150px;"/>
-            <button onclick="window._btn('find_exec')" style="${actC(t)}">찾기</button>
             <button onclick="window._btn('replace_exec')" style="${actC(t)}">모두 바꾸기</button>
             <button onclick="window._btn('find')" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>
           </div>`:""}
@@ -765,6 +796,7 @@ function render(){
     else                    moveFolderTo(itemId, targetId==="__root__"?null:targetId);
   };
   window._closeMoveModal=()=>{state.moveModal=null;render();};
+  window._findDir=(dir)=>handleFind(dir);
   window._changeColor=(id,color)=>changeFolderColor(id,color);
   window._paste=(e)=>{
     e.preventDefault();
