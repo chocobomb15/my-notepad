@@ -227,6 +227,7 @@ function handleFind(dir){
       const relTop=nodeEl.getBoundingClientRect().top-edEl.getBoundingClientRect().top+edEl.scrollTop;
       edEl.scrollTop=relTop-edEl.clientHeight/2;
     }
+    setTimeout(()=>document.getElementById("findInput")?.focus(),0);
   }
   if(countEl) countEl.textContent=`${targetIdx+1} / ${matches.length}`;
 }
@@ -661,7 +662,7 @@ function render(){
         <!-- Find/Replace -->
         ${state.findOpen?`
           <div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:${t.sb};border-bottom:1px solid ${t.bd};flex-shrink:0;flex-wrap:wrap;">
-            <input value="${esc(state.findText)}" placeholder="찾기..." oninput="window._fi(this.value,'find')"
+            <input id="findInput" value="${esc(state.findText)}" placeholder="찾기..." oninput="window._fi(this.value,'find')"
               onkeydown="if(event.key==='Enter'){event.preventDefault();event.shiftKey?window._findDir('up'):window._findDir('down');}"
               style="${inpC(t)};width:150px;"/>
             <span id="findCount" style="font-size:11px;color:${t.mt};min-width:40px;text-align:center;"></span>
@@ -815,7 +816,7 @@ function render(){
     if((e.ctrlKey||e.metaKey)&&e.key==="i"){e.preventDefault();applyFormat("italic");}
     if((e.ctrlKey||e.metaKey)&&e.key==="u"){e.preventDefault();applyFormat("underline");}
     if(e.key==="F5"){e.preventDefault();insertDateTime();}
-    if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();}
+    if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();setTimeout(()=>document.getElementById("findInput")?.focus(),50);}
     if(e.key==="Escape"){state.contextMenu=null;state.findOpen=false;state.moveModal=null;render();}
     if((e.ctrlKey||e.metaKey)&&(e.key==="="||e.key==="+")){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
     if((e.ctrlKey||e.metaKey)&&e.key==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
