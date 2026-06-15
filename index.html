@@ -44,6 +44,7 @@ let state={
   contextMenu:null,
   newFolderMode:false,newFolderName:"",newFolderParentId:null,
   renamingId:null,renamingVal:"",
+  renamingFolderId:null,renamingFolderVal:"",
   saveTimer:null,saving:false,
   pwInput:"",pwError:false,sidebarOpen:true,
   moveModal:null,scrollPositions:{},
@@ -331,6 +332,11 @@ async function commitRename(id){
   if(val){state.files=state.files.map(f=>f.id===id?{...f,name:val}:f);await saveFile(state.files.find(f=>f.id===id));}
   state.renamingId=null;render();
 }
+async function commitFolderRename(id){
+  const val=state.renamingFolderId===id?state.renamingFolderVal.trim():"";
+  if(val){state.folders=state.folders.map(f=>f.id===id?{...f,name:val}:f);await saveFolder(state.folders.find(f=>f.id===id));}
+  state.renamingFolderId=null;state.renamingFolderVal="";render();
+}
 async function deleteFile(id){
   closeTab(id);state.files=state.files.filter(f=>f.id!==id);state.contextMenu=null;
   await delFile(id);render();
@@ -494,7 +500,13 @@ function renderFolderTree(parentId,depth){
         ${dh}
         <span style="font-size:10px;color:${t.mt};">${isOpen?"▾":"▸"}</span>
         <span style="position:relative;display:inline-block;font-size:${depth>0?12:13}px;">📁<span style="position:absolute;bottom:-1px;right:-3px;width:8px;height:8px;border-radius:50%;background:${folder.color};border:2px solid ${t.sb};"></span></span>
-        <span style="font-size:${depth>0?11:12}px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(folder.name)}</span>
+        ${state.renamingFolderId===folder.id
+          ?`<input id="renameFolderInput" value="${esc(state.renamingFolderVal)}" onclick="event.stopPropagation()"
+              oninput="window._rfi(this.value)"
+              onkeydown="if(event.key==='Enter')window._rfc('${folder.id}');if(event.key==='Escape'){state.renamingFolderId=null;render();}"
+              onblur="window._rfc('${folder.id}')"
+              style="font-size:${depth>0?11:12}px;font-weight:600;flex:1;background:transparent;border:none;border-bottom:1px solid ${t.ac};outline:none;color:${t.tx};font-family:inherit;padding:0;"/>`
+          :`<span style="font-size:${depth>0?11:12}px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(folder.name)}</span>`}
         <span style="font-size:10px;color:${t.mt};">${ff.length}</span>
         <button onclick="event.stopPropagation();window._nf('${folder.id}')" style="${btnC(t)};font-size:11px;padding:1px 5px;">+</button>
       </div>
@@ -696,7 +708,8 @@ function render(){
           ?`<div onclick="window._ctxA('rename','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">이름 바꾸기</div>
              <div onclick="window._ctxA('movefile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">다른 폴더로 이동</div>
              <div onclick="window._ctxA('delfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">삭제</div>`
-          :`<div onclick="window._ctxA('newfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 파일</div>
+          :`<div onclick="window._ctxA('renamefolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">이름 바꾸기</div>
+             <div onclick="window._ctxA('newfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 파일</div>
              <div onclick="window._ctxA('newsubfolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">새 하위폴더</div>
              <div onclick="window._ctxA('movefolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">다른 위치로 이동</div>
              <div style="padding:6px 16px;border-top:1px solid ${t.bd};">
@@ -774,7 +787,8 @@ function render(){
   };
   window._cm=(e,type,id)=>{e.preventDefault();e.stopPropagation();state.contextMenu={type,id,x:e.clientX,y:e.clientY};render();};
   window._ctxA=(a,id)=>{
-    if     (a==="rename")      {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
+    if     (a==="rename")        {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
+    else if(a==="renamefolder")  {state.renamingFolderId=id;state.renamingFolderVal=state.folders.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();setTimeout(()=>{const el=document.getElementById("renameFolderInput");if(el){el.focus();el.select();}},50);}
     else if(a==="delfile")     deleteFile(id);
     else if(a==="newfile")     {newFile(id);state.contextMenu=null;}
     else if(a==="delfolder")   deleteFolder(id);
@@ -788,6 +802,8 @@ function render(){
     else                    moveFolderTo(itemId, targetId==="__root__"?null:targetId);
   };
   window._closeMoveModal=()=>{state.moveModal=null;render();};
+  window._rfi=(v)=>{state.renamingFolderVal=v;};
+  window._rfc=(id)=>commitFolderRename(id);
   window._findDir=(dir)=>handleFind(dir);
   window._changeColor=(id,color)=>changeFolderColor(id,color);
   window._paste=(e)=>{
