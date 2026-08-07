@@ -10,7 +10,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc }
+import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc, onSnapshot }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -50,6 +50,7 @@ let state={
   moveModal:null,scrollPositions:{},
   confirmDialog:null,
   trashFolders:[],trashFiles:[],trashOpen:false,exporting:false,
+  loading:false,syncError:null,
 };
 
 const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9"];
@@ -65,47 +66,131 @@ function filesCol()  {return collection(db,"users",uid(),"files");}
 
 // 저장할 때마다 updatedAt 을 남긴다. 기존 필드는 건드리지 않고 추가만 한다.
 const stamp=o=>({...o,updatedAt:Date.now()});
-async function saveFolder(f){await setDoc(doc(foldersCol(),f.id),stamp(f));}
-async function saveFile(f)  {await setDoc(doc(filesCol(),f.id),stamp(f));}
+
+// 내가 쓴 updatedAt 을 기억해 둔다. 서버가 확인해준 내 저장이 스냅샷으로
+// 돌아올 때 "남이 고쳤다" 로 오인하지 않기 위해서다.
+// 마지막 하나만 들고 있으면 빠르게 두 번 저장했을 때 앞선 것이 남의
+// 변경처럼 보이므로, 문서마다 최근 몇 개를 기억한다.
+const myWrites=new Map();   // id -> Set(내가 쓴 updatedAt)
+function noteWrite(id,u){
+  let s=myWrites.get(id);
+  if(!s){s=new Set();myWrites.set(id,s);}
+  s.add(u);
+  if(s.size>8) s.delete(s.values().next().value);
+}
+const isMyWrite=(id,u)=>!!myWrites.get(id)?.has(u);
+async function saveFolder(f){const s=stamp(f);noteWrite(f.id,s.updatedAt);await setDoc(doc(foldersCol(),f.id),s);}
+async function saveFile(f)  {const s=stamp(f);noteWrite(f.id,s.updatedAt);await setDoc(doc(filesCol(),f.id),s);}
 
 // ─── 소프트 삭제 ──────────────
 // deleteDoc 은 휴지통 비우기에서만 쓴다. 일반 삭제는 deletedAt 표시만 남긴다.
 // deletedBatch 는 "폴더 하나를 지웠다" 를 한 묶음으로 복원하기 위한 그룹 ID.
-const markDeleted=b=>({deletedAt:Date.now(),deletedBatch:b,updatedAt:Date.now()});
-const markRestored=()=>({deletedAt:null,deletedBatch:null,updatedAt:Date.now()});
-async function softDelFolder(id,b){await setDoc(doc(foldersCol(),id),markDeleted(b),{merge:true});}
-async function softDelFile(id,b)  {await setDoc(doc(filesCol(),id),  markDeleted(b),{merge:true});}
-async function undelFile(id)      {await setDoc(doc(filesCol(),id),  markRestored(),{merge:true});}
+const markDeleted=(id,b)=>{const u=Date.now();noteWrite(id,u);return{deletedAt:u,deletedBatch:b,updatedAt:u};};
+const markRestored=(id)=>{const u=Date.now();noteWrite(id,u);return{deletedAt:null,deletedBatch:null,updatedAt:u};};
+async function softDelFolder(id,b){await setDoc(doc(foldersCol(),id),markDeleted(id,b),{merge:true});}
+async function softDelFile(id,b)  {await setDoc(doc(filesCol(),id),  markDeleted(id,b),{merge:true});}
+async function undelFile(id)      {await setDoc(doc(filesCol(),id),  markRestored(id),{merge:true});}
 async function purgeFolder(id){await deleteDoc(doc(foldersCol(),id));}
 async function purgeFile(id)  {await deleteDoc(doc(filesCol(),id));}
 
 const byOrder=(a,b)=>(a.order??a.createdAt??0)-(b.order??b.createdAt??0);
 
-async function loadData(){
-  // orderBy("createdAt") 을 쓰면 그 필드가 없는 문서가 조용히 빠진다.
-  // 정렬은 어차피 아래에서 클라이언트가 다시 하므로 전량을 그냥 읽는다.
-  const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
-  const allFolders=fSnap.docs.map(d=>d.data());
-  const allFiles  =fileSnap.docs.map(d=>d.data());
-  state.folders     =allFolders.filter(f=>!f.deletedAt).sort(byOrder);
-  state.files       =allFiles.filter(f=>!f.deletedAt).sort(byOrder);
-  state.trashFolders=allFolders.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
-  state.trashFiles  =allFiles.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
-  if(state.folders.length===0&&state.trashFolders.length===0){
-    const f1={id:genId(),name:"개인",color:COLORS[0],createdAt:Date.now(),order:0,parentId:null};
-    const f2={id:genId(),name:"업무",color:COLORS[1],createdAt:Date.now()+1,order:1,parentId:null};
-    const fi1={id:genId(),folderId:f1.id,name:"일기.md",content:"오늘의 일기를 작성해보세요...",createdAt:Date.now(),order:0};
-    const fi2={id:genId(),folderId:f2.id,name:"할일목록.md",content:"할일 목록을 작성해보세요.",createdAt:Date.now()+1,order:0};
-    await Promise.all([saveFolder(f1),saveFolder(f2),saveFile(fi1),saveFile(fi2)]);
-    state.folders=[f1,f2];state.files=[fi1,fi2];
-    state.openFolderIds=[f1.id];state.tabs=[{fileId:fi1.id,folderId:f1.id}];state.activeTab=fi1.id;
-  }
+// ─── 실시간 동기화 ────────────
+// onSnapshot 이 최초 로드와 이후 변경을 모두 담당한다. getDocs 로 한 번
+// 읽고 다시 구독하면 5.8MB를 두 번 받게 되므로 구독 하나로 끝낸다.
+let unsubFolders=null,unsubFiles=null,seeded=false;
+const seenFirst={folders:false,files:false};
+const conflicts=new Set();          // 편집 중에 남이 고친 문서 id
+const remoteVersions=new Map();     // 그 문서의 서버 버전 (불러오기용)
+let remotePending=false;            // 그릴 타이밍이 아니라 미뤄둔 변경
+
+function stopRealtime(){
+  if(unsubFolders)unsubFolders();
+  if(unsubFiles)unsubFiles();
+  unsubFolders=unsubFiles=null;
+  seenFirst.folders=seenFirst.files=false;
+}
+function startRealtime(){
+  stopRealtime();
+  state.syncError=null;
+  unsubFolders=onSnapshot(foldersCol(),s=>applyRemote("folders",s),onSyncError);
+  unsubFiles  =onSnapshot(filesCol(),  s=>applyRemote("files",  s),onSyncError);
+}
+function onSyncError(e){
+  // 구독이 끊기면 조용히 옛 데이터를 보고 있게 된다. 반드시 알려야 한다.
+  console.error("동기화 오류:",e);
+  state.syncError=(e&&(e.code||e.message))||String(e);
   render();
 }
+
+function applyRemote(kind,snap){
+  // 아직 서버가 확인하지 않은 내 쓰기가 섞인 스냅샷은 건너뛴다.
+  if(snap.metadata.hasPendingWrites) return;
+  const docs=snap.docs.map(d=>d.data());
+
+  if(kind==="folders"){
+    state.folders     =docs.filter(f=>!f.deletedAt).sort(byOrder);
+    state.trashFolders=docs.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
+  }else{
+    // 편집 중이거나 아직 못 올린 문서는 절대 원격 내용으로 덮지 않는다.
+    const busy=new Set([...saveTimers.keys(),...unsaved]);
+    const remoteIds=new Set(docs.map(d=>d.id));
+    const alive=docs.filter(f=>!f.deletedAt).map(rf=>{
+      if(!busy.has(rf.id)) return rf;
+      const local=state.files.find(x=>x.id===rf.id);
+      if(!local) return rf;
+      // 내가 쓴 게 돌아온 것이면 충돌이 아니다.
+      if(rf.updatedAt&&!isMyWrite(rf.id,rf.updatedAt)){
+        conflicts.add(rf.id);remoteVersions.set(rf.id,rf);
+      }
+      return local;   // 내 편집분을 지킨다
+    });
+    // 아직 서버에 안 올라간 새 문서를 잃지 않도록 살려둔다.
+    const localOnly=state.files.filter(f=>!remoteIds.has(f.id));
+    state.files     =[...alive,...localOnly].sort(byOrder);
+    state.trashFiles=docs.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
+  }
+
+  seenFirst[kind]=true;
+  if(seenFirst.folders&&seenFirst.files){state.loading=false;maybeSeed();}
+  safeRender();
+}
+
+// 화면을 다시 그리면 body.innerHTML 이 통째로 갈리므로 커서와 입력 중인
+// 값이 날아간다. 위험한 순간에는 미뤄뒀다가 나중에 그린다.
+function safeRender(){
+  const ed=document.getElementById("editor");
+  const typing=ed&&document.activeElement===ed;
+  const editingName=state.renamingId||state.renamingFolderId||state.newFolderMode;
+  if(typing||editingName){remotePending=true;setSaveIndicator();return;}
+  remotePending=false;render();
+}
+function flushPendingRender(){
+  if(!remotePending)return;
+  remotePending=false;render();
+}
+
+async function maybeSeed(){
+  if(seeded)return;
+  seeded=true;
+  if(state.folders.length||state.trashFolders.length||state.files.length)return;
+  const f1={id:genId(),name:"개인",color:COLORS[0],createdAt:Date.now(),order:0,parentId:null};
+  const f2={id:genId(),name:"업무",color:COLORS[1],createdAt:Date.now()+1,order:1,parentId:null};
+  const fi1={id:genId(),folderId:f1.id,name:"일기.md",content:"오늘의 일기를 작성해보세요...",createdAt:Date.now(),order:0};
+  const fi2={id:genId(),folderId:f2.id,name:"할일목록.md",content:"할일 목록을 작성해보세요.",createdAt:Date.now()+1,order:0};
+  await Promise.all([saveFolder(f1),saveFolder(f2),saveFile(fi1),saveFile(fi2)]);
+  state.openFolderIds=[f1.id];state.tabs=[{fileId:fi1.id,folderId:f1.id}];state.activeTab=fi1.id;
+}
+
+// 🔄 버튼. 실시간 구독이 있어도 남겨둔다 — 구독이 조용히 죽었을 때의
+// 탈출구이자, 충돌 표시를 정리하고 서버에서 다시 읽는 수단이다.
 async function refreshData(){
   const btn=document.getElementById("refreshBtn");
   if(btn){btn.style.opacity="0.4";btn.style.pointerEvents="none";}
-  await loadData();
+  await flushAll();
+  conflicts.clear();remoteVersions.clear();
+  state.loading=true;render();
+  startRealtime();
 }
 
 // ─── Auth ────────────────────
@@ -113,13 +198,17 @@ async function tryLogin(){
   if(state.pwInput===PASSWORD){
     state.pwError=false;localStorage.setItem("notepad_authed","1");
     if(!state.firebaseReady) await signInAnonymously(auth);
-    else{state.authed=true;await loadData();}
+    else enterApp();
   } else {state.pwError=true;render();setTimeout(()=>document.getElementById("pwInput")?.focus(),50);}
+}
+function enterApp(){
+  state.authed=true;state.loading=true;render();
+  startRealtime();
 }
 onAuthStateChanged(auth,async(user)=>{
   state.firebaseReady=!!user;
   const remembered=localStorage.getItem("notepad_authed")==="1";
-  if(user&&(state.pwInput===PASSWORD||remembered)){state.authed=true;await loadData();}
+  if(user&&(state.pwInput===PASSWORD||remembered)) enterApp();
 });
 
 // ─── Content helpers ─────────
@@ -872,6 +961,21 @@ function render(){
     return;
   }
 
+  // 첫 스냅샷이 오기 전. 빈 화면을 보여주면 데이터가 날아간 줄 안다.
+  if(state.loading&&!state.folders.length&&!state.files.length){
+    document.body.innerHTML=`
+    <div style="height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;font-family:${fontFamily};color:${t.mt};">
+      <div style="font-size:34px;">✎</div>
+      ${state.syncError
+        ?`<div style="font-size:14px;color:#f87171;">데이터를 불러오지 못했습니다</div>
+          <div style="font-size:11px;max-width:340px;text-align:center;line-height:1.6;">${esc(state.syncError)}</div>
+          <button onclick="location.reload()" style="${btnC(t)};margin-top:6px;padding:8px 18px;">다시 시도</button>`
+        :`<div style="font-size:14px;">문서를 불러오는 중…</div>
+          <div style="font-size:11px;">문서가 많으면 몇 초 걸릴 수 있습니다</div>`}
+    </div>`;
+    return;
+  }
+
   const activeFile=state.files.find(f=>f.id===state.activeTab);
   const tabFiles  =state.tabs.map(tab=>state.files.find(f=>f.id===tab.fileId)).filter(Boolean);
   const isTxt     =activeFile?.name.toLowerCase().endsWith(".txt");
@@ -983,10 +1087,28 @@ function render(){
             <button onclick="window._btn('replace_exec')" style="${actC(t)}">모두 바꾸기</button>
             <button onclick="window._btn('find')" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>          </div>`:""}
 
+        <!-- 동기화 오류 -->
+        ${state.syncError?`
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;background:#f8717118;border-bottom:1px solid #f8717155;flex-shrink:0;font-size:12px;color:${t.tx};">
+          <span>⚠</span>
+          <span style="flex:1;">실시간 동기화가 끊겼습니다. 다른 기기의 변경이 반영되지 않습니다.</span>
+          <button onclick="window._refresh()" style="${actC(t)}">다시 연결</button>
+        </div>`:""}
+
+        <!-- 편집 충돌 -->
+        ${activeFile&&conflicts.has(activeFile.id)?`
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 14px;background:#fbbf2418;border-bottom:1px solid #fbbf2455;flex-shrink:0;font-size:12px;color:${t.tx};flex-wrap:wrap;">
+          <span>⚠</span>
+          <span style="flex:1;min-width:200px;">다른 곳에서 이 문서가 수정되었습니다. 지금 저장하면 그 변경을 덮어씁니다.</span>
+          <button onclick="window._cfKeepMine('${activeFile.id}')" style="${actC(t)}">내 것 유지</button>
+          <button onclick="window._cfTakeTheirs('${activeFile.id}')" style="${btnC(t)};font-size:11px;padding:3px 10px;">서버 것 불러오기</button>
+        </div>`:""}
+
         <!-- Editor -->
         ${activeFile
           ?`<div id="editor" contenteditable="true"
               oninput="window._tc()" onkeydown="window._kd(event)" onpaste="window._paste(event)"
+              onblur="window._edBlur()"
               spellcheck="false"
               style="flex:1;background:${t.bg};color:${t.tx};border:none;outline:none;overflow-y:auto;
                 padding:20px 28px;font-size:${Math.round(14*state.zoom/100)}px;line-height:1.85;
@@ -1137,6 +1259,28 @@ function render(){
   window._cfYes=()=>{const cb=state.confirmDialog?.onConfirm;state.confirmDialog=null;render();if(cb)cb();};
   window._cfNo =()=>{state.confirmDialog=null;render();};
   window._export2=exportBackup;
+  window._cfKeepMine=(id)=>{
+    // 내 편집분을 그대로 두고 저장을 예약한다. 다음 저장에서 서버를 덮는다.
+    conflicts.delete(id);remoteVersions.delete(id);
+    scheduleSave(id);render();
+  };
+  window._cfTakeTheirs=(id)=>{
+    const remote=remoteVersions.get(id);if(!remote)return;
+    const mine=state.files.find(f=>f.id===id);
+    askConfirm({
+      title:"서버 버전 불러오기",
+      message:"이 문서를 <b>서버에 저장된 내용</b>으로 되돌립니다.",
+      detail:`지금 화면의 편집분(${htmlToText(mine?.content||"").length.toLocaleString()}자)은 사라집니다.<br>서버 버전은 ${htmlToText(remote.content||"").length.toLocaleString()}자입니다.`,
+      okLabel:"서버 것으로",
+      onConfirm:()=>{
+        cancelSave(id);
+        conflicts.delete(id);remoteVersions.delete(id);
+        state.files=state.files.map(f=>f.id===id?remote:f);
+        render();setSaveIndicator();
+      },
+    });
+  };
+  window._edBlur=flushPendingRender;
   window._trOpen =()=>{state.trashOpen=true;render();};
   window._trClose=()=>{state.trashOpen=false;render();};
   window._trRestore=(b)=>restoreBatch(b);
