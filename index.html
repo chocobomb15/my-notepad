@@ -532,10 +532,12 @@ function renderStatusBar(){
 
   const txt=htmlToText(file.content);
   const bytes=docBytes(file.content),pct=Math.round(bytes*100/FS_DOC_LIMIT);
-  const near=pct>=75;
-  const cap=`<span style="${near?`color:${pct>=90?"#f87171":"#fbbf24"};font-weight:700;`:""}"
+  // 조건부로 숨기면 서서히 커지는 문서를 놓친다. 퍼센트는 항상 보여주고
+  // 색으로만 위험도를 구분한다 (60%부터 주의, 90%부터 경고).
+  const warn=pct>=60,danger=pct>=90;
+  const cap=`<span style="${warn?`color:${danger?"#f87171":"#fbbf24"};font-weight:700;`:""}"
     title="Firestore는 문서 하나에 1 MiB까지만 저장할 수 있습니다. 넘으면 저장이 실패하니 문서를 나눠 주세요.">
-    ${(bytes/1024).toFixed(0)}KB${near?` · 상한의 ${pct}%`:""}</span>`;
+    ${(bytes/1024).toFixed(0)}KB · 상한의 ${pct}%</span>`;
 
   sb.innerHTML=`<span>${esc(file.name)}</span><span>줄: ${txt.split("\n").length.toLocaleString()}</span>`
     +`<span>글자: ${txt.length.toLocaleString()}</span>${cap}`
