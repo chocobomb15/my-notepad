@@ -974,20 +974,40 @@ function render(){
     if((e.ctrlKey||e.metaKey)&&e.key==="i"){e.preventDefault();applyFormat("italic");}
     if((e.ctrlKey||e.metaKey)&&e.key==="u"){e.preventDefault();applyFormat("underline");}
     if(e.key==="F5"){e.preventDefault();insertDateTime();}
-    if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();setTimeout(()=>document.getElementById("findInput")?.focus(),50);}
-    if(e.key==="Escape"){
-      const st=document.getElementById("editor")?.scrollTop||0;
-      state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.confirmDialog=null;render();
-      const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
-    }
-    if((e.ctrlKey||e.metaKey)&&(e.key==="="||e.key==="+")){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
-    if((e.ctrlKey||e.metaKey)&&e.key==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
     if(e.key==="Tab"){e.preventDefault();document.execCommand("insertText",false,"    ");}
   };
   document.onclick=(e)=>{
     if(state.contextMenu&&!e.target.closest("#ctxmenu")){state.contextMenu=null;render();}
   };
 }
+
+// ─── 전역 단축키 ──────────────
+// render() 는 매번 body.innerHTML 을 통째로 새로 쓰기 때문에, 그때마다
+// document.activeElement 가 body 로 리셋된다. 찾기·줌·모달 닫기처럼
+// 에디터에 커서가 없어도 되는 단축키를 #editor 의 onkeydown 에만 걸어두면
+// 포커스가 body 에 있는 대부분의 순간에 브라우저 기본 동작(예: Ctrl+H
+// 방문기록)이 대신 실행된다. 이 셋은 window 레벨에서 한 번만 등록한다.
+window.addEventListener("keydown",(e)=>{
+  if(e.key==="Escape"){
+    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog)return;
+    const st=document.getElementById("editor")?.scrollTop||0;
+    state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.confirmDialog=null;render();
+    const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
+    return;
+  }
+  if(!(e.ctrlKey||e.metaKey))return;
+  if(!state.authed)return;
+  const k=e.key.toLowerCase();
+  if(k==="h"||k==="f"){
+    if(!state.activeTab)return;
+    e.preventDefault();
+    const st=document.getElementById("editor")?.scrollTop||0;
+    state.findOpen=!state.findOpen;render();
+    if(state.findOpen)setTimeout(()=>document.getElementById("findInput")?.focus(),50);
+    else{const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;}
+  } else if(k==="="||k==="+"){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
+  else if(k==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
+});
 
 render();
 </script>
