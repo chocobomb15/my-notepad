@@ -10,7 +10,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc, query, orderBy }
+import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -49,6 +49,7 @@ let state={
   pwInput:"",pwError:false,sidebarOpen:true,
   moveModal:null,scrollPositions:{},
   confirmDialog:null,
+  trashFolders:[],trashFiles:[],trashOpen:false,exporting:false,
 };
 
 const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9"];
@@ -61,19 +62,36 @@ const DATA_PATH="shared";
 function uid(){return DATA_PATH;}
 function foldersCol(){return collection(db,"users",uid(),"folders");}
 function filesCol()  {return collection(db,"users",uid(),"files");}
-async function saveFolder(f){await setDoc(doc(foldersCol(),f.id),f);}
-async function saveFile(f)  {await setDoc(doc(filesCol(),f.id),f);}
-async function delFolder(id){await deleteDoc(doc(foldersCol(),id));}
-async function delFile(id)  {await deleteDoc(doc(filesCol(),id));}
+
+// 저장할 때마다 updatedAt 을 남긴다. 기존 필드는 건드리지 않고 추가만 한다.
+const stamp=o=>({...o,updatedAt:Date.now()});
+async function saveFolder(f){await setDoc(doc(foldersCol(),f.id),stamp(f));}
+async function saveFile(f)  {await setDoc(doc(filesCol(),f.id),stamp(f));}
+
+// ─── 소프트 삭제 ──────────────
+// deleteDoc 은 휴지통 비우기에서만 쓴다. 일반 삭제는 deletedAt 표시만 남긴다.
+// deletedBatch 는 "폴더 하나를 지웠다" 를 한 묶음으로 복원하기 위한 그룹 ID.
+const markDeleted=b=>({deletedAt:Date.now(),deletedBatch:b,updatedAt:Date.now()});
+const markRestored=()=>({deletedAt:null,deletedBatch:null,updatedAt:Date.now()});
+async function softDelFolder(id,b){await setDoc(doc(foldersCol(),id),markDeleted(b),{merge:true});}
+async function softDelFile(id,b)  {await setDoc(doc(filesCol(),id),  markDeleted(b),{merge:true});}
+async function undelFile(id)      {await setDoc(doc(filesCol(),id),  markRestored(),{merge:true});}
+async function purgeFolder(id){await deleteDoc(doc(foldersCol(),id));}
+async function purgeFile(id)  {await deleteDoc(doc(filesCol(),id));}
+
+const byOrder=(a,b)=>(a.order??a.createdAt??0)-(b.order??b.createdAt??0);
 
 async function loadData(){
-  const [fSnap,fileSnap]=await Promise.all([
-    getDocs(query(foldersCol(),orderBy("createdAt"))),
-    getDocs(query(filesCol(),  orderBy("createdAt")))
-  ]);
-  state.folders=fSnap.docs.map(d=>d.data()).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
-  state.files  =fileSnap.docs.map(d=>d.data()).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
-  if(state.folders.length===0){
+  // orderBy("createdAt") 을 쓰면 그 필드가 없는 문서가 조용히 빠진다.
+  // 정렬은 어차피 아래에서 클라이언트가 다시 하므로 전량을 그냥 읽는다.
+  const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
+  const allFolders=fSnap.docs.map(d=>d.data());
+  const allFiles  =fileSnap.docs.map(d=>d.data());
+  state.folders     =allFolders.filter(f=>!f.deletedAt).sort(byOrder);
+  state.files       =allFiles.filter(f=>!f.deletedAt).sort(byOrder);
+  state.trashFolders=allFolders.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
+  state.trashFiles  =allFiles.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
+  if(state.folders.length===0&&state.trashFolders.length===0){
     const f1={id:genId(),name:"개인",color:COLORS[0],createdAt:Date.now(),order:0,parentId:null};
     const f2={id:genId(),name:"업무",color:COLORS[1],createdAt:Date.now()+1,order:1,parentId:null};
     const fi1={id:genId(),folderId:f1.id,name:"일기.md",content:"오늘의 일기를 작성해보세요...",createdAt:Date.now(),order:0};
@@ -429,19 +447,91 @@ async function commitFolderRename(id){
 }
 async function deleteFile(id){
   cancelSave(id);
+  const batch=genId(),now=Date.now();
+  const f=state.files.find(x=>x.id===id);
   closeTab(id);state.files=state.files.filter(f=>f.id!==id);state.contextMenu=null;
-  await delFile(id);render();
+  if(f) state.trashFiles=[{...f,deletedAt:now,deletedBatch:batch},...state.trashFiles];
+  render();
+  await softDelFile(id,batch);
 }
 async function deleteFolder(folderId){
+  const batch=genId(),now=Date.now();
   const allIds=getAllDescendantFolderIds(folderId);
-  const fileIds=state.files.filter(f=>allIds.includes(f.folderId)).map(f=>f.id);
+  const victims=state.files.filter(f=>allIds.includes(f.folderId));
+  const fileIds=victims.map(f=>f.id);
   fileIds.forEach(cancelSave);
   state.tabs=state.tabs.filter(t=>!fileIds.includes(t.fileId));
   if(fileIds.includes(state.activeTab)) state.activeTab=null;
+
+  const goneFolders=state.folders.filter(f=>allIds.includes(f.id));
+  state.trashFolders=[...goneFolders.map(f=>({...f,deletedAt:now,deletedBatch:batch})),...state.trashFolders];
+  state.trashFiles  =[...victims.map(f=>({...f,deletedAt:now,deletedBatch:batch})),...state.trashFiles];
+
   state.files=state.files.filter(f=>!allIds.includes(f.folderId));
   state.folders=state.folders.filter(f=>!allIds.includes(f.id));
   state.contextMenu=null;
-  await Promise.all([...fileIds.map(id=>delFile(id)),...allIds.map(id=>delFolder(id))]);render();
+  render();
+  await Promise.all([...fileIds.map(id=>softDelFile(id,batch)),...allIds.map(id=>softDelFolder(id,batch))]);
+}
+
+// ─── 휴지통 ───────────────────
+// 삭제는 묶음(batch) 단위로 되돌린다. 폴더 하나를 지우면 그 안의 문서까지
+// 같은 batch 로 묶이므로, 복원 한 번이면 통째로 돌아온다.
+function trashBatches(){
+  const map=new Map();
+  const push=(item,kind)=>{
+    const b=item.deletedBatch||("_"+item.id);
+    if(!map.has(b)) map.set(b,{batch:b,at:item.deletedAt,folders:[],files:[]});
+    const e=map.get(b);e[kind].push(item);
+    if(item.deletedAt>e.at) e.at=item.deletedAt;
+  };
+  state.trashFolders.forEach(f=>push(f,"folders"));
+  state.trashFiles.forEach(f=>push(f,"files"));
+  return [...map.values()].sort((a,b)=>b.at-a.at);
+}
+
+async function restoreBatch(batch){
+  const e=trashBatches().find(x=>x.batch===batch);if(!e)return;
+  const aliveIds=new Set([...state.folders.map(f=>f.id),...e.folders.map(f=>f.id)]);
+
+  // 되살아난 폴더의 부모가 아직 휴지통에 있거나 사라졌으면 최상위로 올린다.
+  const folders=e.folders.map(f=>({...f,deletedAt:null,deletedBatch:null,
+    parentId:(f.parentId&&aliveIds.has(f.parentId))?f.parentId:null}));
+
+  // 문서가 있던 폴더가 사라졌으면 갈 곳이 없다. 화면에 안 보이면 잃은 것과
+  // 같으므로, 그럴 때만 복구용 폴더를 만들어 거기에 담는다.
+  let rescue=null;
+  const needRescue=e.files.some(f=>!aliveIds.has(f.folderId));
+  if(needRescue){
+    rescue=state.folders.find(f=>f.name==="복구된 문서"&&!f.parentId);
+    if(!rescue){
+      const maxO=state.folders.filter(f=>!f.parentId).reduce((m,f)=>Math.max(m,f.order??0),-1);
+      rescue={id:genId(),name:"복구된 문서",color:COLORS[2],createdAt:Date.now(),order:maxO+1,parentId:null,deletedAt:null,deletedBatch:null};
+      folders.push(rescue);
+    }
+  }
+  const files=e.files.map(f=>({...f,deletedAt:null,deletedBatch:null,
+    folderId:aliveIds.has(f.folderId)?f.folderId:rescue.id}));
+
+  state.folders=[...state.folders,...folders].sort(byOrder);
+  state.files  =[...state.files,...files].sort(byOrder);
+  state.trashFolders=state.trashFolders.filter(f=>f.deletedBatch!==batch);
+  state.trashFiles  =state.trashFiles.filter(f=>f.deletedBatch!==batch);
+  render();
+
+  // 위치가 바뀐 것은 문서 전체를 다시 쓰고, 그대로인 것은 표시만 지운다.
+  await Promise.all([
+    ...folders.map(f=>saveFolder(f)),
+    ...files.map(f=>f.folderId===e.files.find(x=>x.id===f.id).folderId?undelFile(f.id):saveFile(f)),
+  ]);
+}
+
+async function purgeBatch(batch){
+  const e=trashBatches().find(x=>x.batch===batch);if(!e)return;
+  state.trashFolders=state.trashFolders.filter(f=>f.deletedBatch!==batch);
+  state.trashFiles  =state.trashFiles.filter(f=>f.deletedBatch!==batch);
+  render();
+  await Promise.all([...e.files.map(f=>purgeFile(f.id)),...e.folders.map(f=>purgeFolder(f.id))]);
 }
 async function changeFolderColor(folderId, color){
   state.folders=state.folders.map(f=>f.id===folderId?{...f,color}:f);
@@ -552,13 +642,95 @@ function updateStatusBar(immediate){
   statTimer=setTimeout(renderStatusBar,250);
 }
 
+// ─── 백업 내보내기 ────────────
+// backup.html 과 같은 형식으로 내보낸다. 그 도구로 그대로 복원할 수 있다.
+async function exportBackup(){
+  if(state.exporting) return;
+  state.exporting=true;render();
+  try{
+    const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
+    const folders=fSnap.docs.map(d=>({_docId:d.id,data:d.data()}));
+    const files  =fileSnap.docs.map(d=>({_docId:d.id,data:d.data()}));
+    const chars=files.reduce((n,f)=>n+String(f.data.content||"").length,0);
+    const payload={
+      tool:"notepad-backup",version:1,
+      exportedAt:new Date().toISOString(),
+      project:firebaseConfig.projectId,
+      sourcePath:"users/"+uid(),
+      counts:{folders:folders.length,files:files.length,contentChars:chars},
+      folders,files,
+    };
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json;charset=utf-8"});
+    const d=new Date(),p=n=>String(n).padStart(2,"0");
+    const st=d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+"-"+p(d.getHours())+p(d.getMinutes());
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=`notepad-backup-${uid()}-${st}.json`;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),3000);
+    state.exporting=false;render();
+    askConfirm({title:"백업 완료",
+      message:`폴더 <b>${folders.length}</b>개 · 문서 <b>${files.length}</b>개를 내려받았습니다.`,
+      detail:`본문 ${chars.toLocaleString()}자 · 휴지통 항목 포함<br>backup.html 에서 이 파일로 복원할 수 있습니다.`,
+      okLabel:"확인",tone:"ok",noCancel:true,onConfirm:()=>{}});
+  }catch(e){
+    state.exporting=false;render();
+    askConfirm({title:"백업 실패",message:"내보내는 중 오류가 발생했습니다.",
+      detail:esc(String(e&&(e.code||e.message)||e)),okLabel:"확인",noCancel:true,onConfirm:()=>{}});
+  }
+}
+
+// ─── 휴지통 모달 ──────────────
+function renderTrash(t,fontFamily){
+  if(!state.trashOpen) return "";
+  const batches=trashBatches();
+  const fmtDate=ts=>{const d=new Date(ts);return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;};
+
+  const rows=batches.map(e=>{
+    const chars=e.files.reduce((n,f)=>n+htmlToText(f.content||"").length,0);
+    const label=e.folders.length
+      ? `📁 ${esc(e.folders[0].name)}${e.folders.length>1?` 외 폴더 ${e.folders.length-1}개`:""}`
+      : `📄 ${esc(e.files[0]?.name||"(이름 없음)")}${e.files.length>1?` 외 ${e.files.length-1}개`:""}`;
+    return `
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid ${t.bd};">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;color:${t.tx};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</div>
+        <div style="font-size:10.5px;color:${t.mt};margin-top:2px;">
+          ${fmtDate(e.at)} 삭제 · 문서 ${e.files.length}개 · ${chars.toLocaleString()}자
+        </div>
+      </div>
+      <button onclick="window._trRestore('${e.batch}')" style="${actC(t)};padding:5px 10px;flex-shrink:0;">복원</button>
+      <button onclick="window._trPurge('${e.batch}')" style="${btnC(t)};padding:5px 10px;font-size:11px;color:#f87171;border-color:#f8717155;flex-shrink:0;">영구 삭제</button>
+    </div>`;
+  }).join("");
+
+  return `
+  <div onclick="window._trClose()" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:2500;display:flex;align-items:center;justify-content:center;">
+    <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;width:min(520px,calc(100% - 40px));max-height:70vh;display:flex;flex-direction:column;box-shadow:0 16px 40px rgba(0,0,0,0.35);font-family:${fontFamily};">
+      <div style="padding:18px 20px 12px;border-bottom:1px solid ${t.bd};">
+        <div style="font-size:15px;font-weight:700;color:${t.tx};">🗑 휴지통</div>
+        <div style="font-size:11.5px;color:${t.mt};margin-top:4px;">
+          ${batches.length?"삭제한 항목은 여기 남아 있습니다. 영구 삭제하기 전까지 언제든 되돌릴 수 있습니다.":""}
+        </div>
+      </div>
+      <div style="flex:1;overflow-y:auto;">
+        ${batches.length?rows:`<div style="padding:40px 20px;text-align:center;color:${t.mt};font-size:13px;">휴지통이 비어 있습니다.</div>`}
+      </div>
+      <div style="padding:12px 20px;border-top:1px solid ${t.bd};">
+        <button onclick="window._trClose()" style="${btnC(t)};width:100%;padding:9px;text-align:center;">닫기</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ─── 확인 모달 ────────────────
 // 네이티브 confirm() 은 환경에 따라 조용히 false 로 처리되므로 쓰지 않는다.
 function askConfirm(opts){state.confirmDialog=opts;render();}
 
 function renderConfirm(t,fontFamily){
   if(!state.confirmDialog) return "";
-  const {title,message,detail,okLabel}=state.confirmDialog;
+  const {title,message,detail,okLabel,tone,noCancel}=state.confirmDialog;
+  const okBg=tone==="ok"?t.ac:"#f87171";
   return `
   <div onclick="window._cfNo()" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:3000;display:flex;align-items:center;justify-content:center;">
     <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;padding:22px;max-width:380px;width:calc(100% - 40px);box-shadow:0 16px 40px rgba(0,0,0,0.4);font-family:${fontFamily};">
@@ -566,8 +738,8 @@ function renderConfirm(t,fontFamily){
       <div style="font-size:13px;color:${t.tx};line-height:1.65;">${message}</div>
       ${detail?`<div style="font-size:11.5px;color:${t.mt};line-height:1.6;margin-top:8px;padding:8px 10px;background:${t.bg};border-radius:6px;border:1px solid ${t.bd};">${detail}</div>`:""}
       <div style="display:flex;gap:8px;margin-top:18px;">
-        <button onclick="window._cfYes()" style="flex:1;background:#f87171;border:1px solid #f87171;color:#fff;border-radius:6px;padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">${esc(okLabel||"삭제")}</button>
-        <button onclick="window._cfNo()" style="flex:1;${btnC(t)};padding:9px;font-size:13px;">취소</button>
+        <button onclick="window._cfYes()" style="flex:1;background:${okBg};border:1px solid ${okBg};color:#fff;border-radius:6px;padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">${esc(okLabel||"삭제")}</button>
+        ${noCancel?"":`<button onclick="window._cfNo()" style="flex:1;${btnC(t)};padding:9px;font-size:13px;">취소</button>`}
       </div>
     </div>
   </div>`;
@@ -722,6 +894,8 @@ function render(){
       <button onclick="window._btn('zm+')" style="${btnC(t)}">＋</button>
       <button onclick="window._btn('dark')" style="${btnC(t)}">${state.dark?"☀️":"🌙"}</button>
       <button id="refreshBtn" onclick="window._refresh()" title="최신 데이터 불러오기" style="${btnC(t)}">🔄</button>
+      <button onclick="window._trOpen()" title="휴지통${state.trashFiles.length?` (문서 ${state.trashFiles.length}개)`:""}" style="${btnC(t)};position:relative;">🗑${state.trashFiles.length?`<span style="position:absolute;top:-4px;right:-4px;background:${t.ac};color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;min-width:14px;">${state.trashFiles.length}</span>`:""}</button>
+      <button onclick="window._export2()" title="전체 백업 내보내기 (JSON)" ${state.exporting?"disabled":""} style="${btnC(t)};${state.exporting?"opacity:0.4;":""}">${state.exporting?"⏳":"💾"}</button>
       <button onclick="window._btn('lock')" title="잠금" style="${btnC(t)};color:${t.mt};">🔒</button>
       <span id="saveindicator" style="font-size:10px;min-width:52px;text-align:right;color:#34d399;">✓ 저장됨</span>
     </div>
@@ -860,6 +1034,9 @@ function render(){
     <!-- 이동 모달 -->
     ${renderMoveModal(t,fontFamily)}
 
+    <!-- 휴지통 -->
+    ${renderTrash(t,fontFamily)}
+
     <!-- 확인 모달 -->
     ${renderConfirm(t,fontFamily)}
   </div>`;
@@ -926,8 +1103,9 @@ function render(){
       state.contextMenu=null;
       askConfirm({
         title:"문서 삭제",
-        message:`<b>${esc(f?.name||"")}</b> 문서를 삭제합니다.`,
-        detail:`본문 ${chars.toLocaleString()}자 · 되돌릴 수 없습니다.`,
+        message:`<b>${esc(f?.name||"")}</b> 문서를 휴지통으로 보냅니다.`,
+        detail:`본문 ${chars.toLocaleString()}자 · 🗑 휴지통에서 되돌릴 수 있습니다.`,
+        okLabel:"휴지통으로",
         onConfirm:()=>deleteFile(id),
       });
     }
@@ -940,9 +1118,9 @@ function render(){
       state.contextMenu=null;
       askConfirm({
         title:"폴더 삭제",
-        message:`<b>${esc(folder?.name||"")}</b> 폴더를 삭제합니다.<br>안에 든 것도 <b>전부 함께</b> 지워집니다.`,
-        detail:`하위 폴더 ${allIds.length-1}개 · 문서 ${victims.length}개 · 본문 ${chars.toLocaleString()}자<br>되돌릴 수 없습니다.`,
-        okLabel:`${victims.length}개 문서 삭제`,
+        message:`<b>${esc(folder?.name||"")}</b> 폴더를 휴지통으로 보냅니다.<br>안에 든 것도 <b>전부 함께</b> 들어갑니다.`,
+        detail:`하위 폴더 ${allIds.length-1}개 · 문서 ${victims.length}개 · 본문 ${chars.toLocaleString()}자<br>🗑 휴지통에서 한 번에 되돌릴 수 있습니다.`,
+        okLabel:`${victims.length}개 문서 휴지통으로`,
         onConfirm:()=>deleteFolder(id),
       });
     }
@@ -958,6 +1136,21 @@ function render(){
   window._closeMoveModal=()=>{state.moveModal=null;render();};
   window._cfYes=()=>{const cb=state.confirmDialog?.onConfirm;state.confirmDialog=null;render();if(cb)cb();};
   window._cfNo =()=>{state.confirmDialog=null;render();};
+  window._export2=exportBackup;
+  window._trOpen =()=>{state.trashOpen=true;render();};
+  window._trClose=()=>{state.trashOpen=false;render();};
+  window._trRestore=(b)=>restoreBatch(b);
+  window._trPurge=(b)=>{
+    const e=trashBatches().find(x=>x.batch===b);if(!e)return;
+    const chars=e.files.reduce((n,f)=>n+htmlToText(f.content||"").length,0);
+    askConfirm({
+      title:"영구 삭제",
+      message:`문서 <b>${e.files.length}</b>개를 <b>완전히</b> 지웁니다.`,
+      detail:`본문 ${chars.toLocaleString()}자<br>이 작업은 되돌릴 수 없습니다. 백업에도 남지 않습니다.`,
+      okLabel:"영구 삭제",
+      onConfirm:()=>purgeBatch(b),
+    });
+  };
   window._rfi=(v)=>{state.renamingFolderVal=v;};
   window._rfc=(id)=>commitFolderRename(id);
   window._rfEsc=()=>{state.renamingFolderId=null;state.renamingFolderVal="";render();};
@@ -991,9 +1184,11 @@ function render(){
 // 방문기록)이 대신 실행된다. 이 셋은 window 레벨에서 한 번만 등록한다.
 window.addEventListener("keydown",(e)=>{
   if(e.key==="Escape"){
-    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog)return;
+    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog&&!state.trashOpen)return;
     const st=document.getElementById("editor")?.scrollTop||0;
-    state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.confirmDialog=null;render();
+    // 확인 모달이 떠 있으면 그것만 닫는다. 뒤에 있는 휴지통까지 같이 닫히면 안 된다.
+    if(state.confirmDialog){state.confirmDialog=null;render();return;}
+    state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.trashOpen=false;render();
     const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
     return;
   }
