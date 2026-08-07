@@ -45,16 +45,20 @@ let state={
   newFolderMode:false,newFolderName:"",newFolderParentId:null,
   renamingId:null,renamingVal:"",
   renamingFolderId:null,renamingFolderVal:"",
-  saveTimer:null,saving:false,
+  saving:false,
   pwInput:"",pwError:false,sidebarOpen:true,
   moveModal:null,scrollPositions:{},
+  confirmDialog:null,
 };
 
 const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9"];
 function genId(){return Math.random().toString(36).slice(2,10)+Date.now().toString(36);}
 
 // ─── Firestore ───────────────
-function uid(){return "shared";}
+// 데이터 경로. 실제 사용은 "shared", 개편 작업 리허설은 "staging".
+// 배포 전에 반드시 "shared" 인지 확인할 것.
+const DATA_PATH="shared";
+function uid(){return DATA_PATH;}
 function foldersCol(){return collection(db,"users",uid(),"folders");}
 function filesCol()  {return collection(db,"users",uid(),"files");}
 async function saveFolder(f){await setDoc(doc(foldersCol(),f.id),f);}
@@ -133,20 +137,78 @@ function htmlToText(html){
 }
 function getEditorContent(){const e=document.getElementById("editor");return e?e.innerHTML:"";}
 
+// ─── 저장 엔진 ────────────────
+// 타이머를 파일별로 둔다. 전역 타이머 하나를 쓰면 A를 치다가 700ms 안에
+// B로 넘어갔을 때 A의 저장이 취소된 채로 사라진다.
+const saveTimers=new Map();   // fileId -> timer
+const unsaved=new Set();      // 아직 서버에 못 올린 fileId
+let   saveError=null;         // 마지막 저장 실패
+
+function setSaveIndicator(){
+  const si=document.getElementById("saveindicator");if(!si)return;
+  const t=T();
+  if(saveError)      si.innerHTML=`<span style="color:#f87171;font-size:10px;" title="${esc(saveError)}">⚠ 저장 실패</span>`;
+  else if(unsaved.size) si.innerHTML=`<span style="color:${t.mt};font-size:10px;">저장 중...</span>`;
+  else               si.innerHTML=`<span style="color:#34d399;font-size:10px;">✓ 저장됨</span>`;
+}
+
+function scheduleSave(fileId){
+  if(!fileId)return;
+  unsaved.add(fileId);
+  clearTimeout(saveTimers.get(fileId));
+  saveTimers.set(fileId,setTimeout(()=>flushFile(fileId),700));
+  setSaveIndicator();
+}
+
+async function flushFile(fileId){
+  clearTimeout(saveTimers.get(fileId));saveTimers.delete(fileId);
+  const f=state.files.find(x=>x.id===fileId);
+  if(!f){unsaved.delete(fileId);setSaveIndicator();return;}
+  try{
+    await saveFile(f);
+    unsaved.delete(fileId);saveError=null;
+  }catch(e){
+    // 문서가 1MiB를 넘었거나 권한/네트워크 문제. 조용히 넘어가면 안 된다.
+    saveError=(e&&(e.code||e.message))||String(e);
+    console.error("저장 실패:",f.name,e);
+  }
+  setSaveIndicator();
+}
+
+function flushAll(){return Promise.all([...saveTimers.keys()].map(id=>flushFile(id)));}
+
+// 삭제 직전에 예약된 저장을 버린다. 안 그러면 지운 문서가 다시 살아난다.
+function cancelSave(fileId){
+  clearTimeout(saveTimers.get(fileId));
+  saveTimers.delete(fileId);unsaved.delete(fileId);
+}
+
+// 탭을 떠나거나 창을 닫을 때 대기 중인 저장을 밀어넣는다.
+document.addEventListener("visibilitychange",()=>{if(document.hidden)flushAll();});
+window.addEventListener("pagehide",()=>{flushAll();});
+window.addEventListener("beforeunload",(e)=>{
+  const ed=document.getElementById("editor");
+  if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
+  flushAll();
+  if(unsaved.size||saveError){e.preventDefault();e.returnValue="";return "";}
+});
+
+// 현재 편집 중인 내용을 state에 반영하고 즉시 저장 예약 (탭 전환·닫기용)
+function commitEditor(){
+  const ed=document.getElementById("editor");
+  if(!ed||!state.activeTab)return;
+  const id=state.activeTab;
+  state.files=state.files.map(f=>f.id===id?{...f,content:ed.innerHTML}:f);
+  if(saveTimers.has(id)) flushFile(id);
+}
+
 // ─── Text / format ───────────
 function handleTextChange(){
+  const id=state.activeTab;
   const content=getEditorContent();
-  state.files=state.files.map(f=>f.id===state.activeTab?{...f,content}:f);
+  state.files=state.files.map(f=>f.id===id?{...f,content}:f);
   updateStatusBar();
-  const t=T(),si=document.getElementById("saveindicator");
-  if(si) si.innerHTML=`<span style="color:${t.mt};font-size:10px;">저장 중...</span>`;
-  clearTimeout(state.saveTimer);
-  state.saveTimer=setTimeout(async()=>{
-    const f=state.files.find(f=>f.id===state.activeTab);
-    if(f) await saveFile(f);
-    const s2=document.getElementById("saveindicator");
-    if(s2) s2.innerHTML=`<span style="color:#34d399;font-size:10px;">✓ 저장됨</span>`;
-  },700);
+  scheduleSave(id);
 }
 function applyFormat(type){
   const ed=document.getElementById("editor");if(!ed)return;
@@ -222,10 +284,36 @@ function handleFind(dir){
 }
 async function handleReplace(){
   const file=state.files.find(f=>f.id===state.activeTab);if(!file||!state.findText)return;
-  const newHTML=textToHTML(htmlToMarkdown(file.content).replaceAll(state.findText,state.replaceText));
+  let newHTML,count=0;
+
+  if(isHTML(file.content)){
+    // 마크다운으로 왕복하면 <strong> 이 리터럴 ** 로 뭉개진다.
+    // 텍스트 노드만 직접 치환해서 서식을 그대로 둔다.
+    const dom=new DOMParser().parseFromString(`<div id="r">${file.content}</div>`,"text/html");
+    const root=dom.getElementById("r");
+    const walker=dom.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+    const nodes=[];let n;
+    while(n=walker.nextNode()) nodes.push(n);
+    nodes.forEach(node=>{
+      const parts=node.nodeValue.split(state.findText);
+      if(parts.length<2) return;
+      count+=parts.length-1;
+      node.nodeValue=parts.join(state.replaceText);
+    });
+    newHTML=root.innerHTML;
+  } else {
+    count=file.content.split(state.findText).length-1;
+    newHTML=textToHTML(file.content.split(state.findText).join(state.replaceText));
+  }
+
+  const cnt=document.getElementById("findCount");
+  if(!count){if(cnt)cnt.textContent="없음";return;}
+
   state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:newHTML}:f);
   const ed=document.getElementById("editor");if(ed)ed.innerHTML=newHTML;
-  await saveFile({...file,content:newHTML});updateStatusBar();
+  state.findIndex=-1;
+  if(cnt)cnt.textContent=`${count}개 바꿈`;
+  scheduleSave(state.activeTab);updateStatusBar();
 }
 
 // ─── Move helpers ─────────────
@@ -265,6 +353,7 @@ function getAncestorIds(folderId){
   return result;
 }
 function toggleFolder(folderId){
+  commitEditor();
   const isOpen=state.openFolderIds.includes(folderId);
   if(isOpen){
     const allIds=getAllDescendantFolderIds(folderId);
@@ -303,6 +392,7 @@ function scrollToActiveTab(){
   },60);
 }
 function openFile(file){
+  commitEditor();
   if(!state.tabs.find(t=>t.fileId===file.id)) state.tabs=[...state.tabs,{fileId:file.id,folderId:file.folderId}];
   state.activeTab=file.id;render();scrollToActiveTab();
 }
@@ -338,12 +428,14 @@ async function commitFolderRename(id){
   state.renamingFolderId=null;state.renamingFolderVal="";render();
 }
 async function deleteFile(id){
+  cancelSave(id);
   closeTab(id);state.files=state.files.filter(f=>f.id!==id);state.contextMenu=null;
   await delFile(id);render();
 }
 async function deleteFolder(folderId){
   const allIds=getAllDescendantFolderIds(folderId);
   const fileIds=state.files.filter(f=>allIds.includes(f.folderId)).map(f=>f.id);
+  fileIds.forEach(cancelSave);
   state.tabs=state.tabs.filter(t=>!fileIds.includes(t.fileId));
   if(fileIds.includes(state.activeTab)) state.activeTab=null;
   state.files=state.files.filter(f=>!allIds.includes(f.folderId));
@@ -426,13 +518,57 @@ const fmtC =t=>`background:none;border:1px solid ${t.bd};border-radius:4px;curso
 const cvtC =t=>`background:${t.ac}18;border:1px solid ${t.ac}55;border-radius:4px;cursor:pointer;color:${t.ac};padding:2px 9px;font-size:11px;font-family:inherit;`;
 const dh   =`<span class="drag-handle" style="cursor:grab;color:#8b949e;font-size:10px;padding:0 2px;flex-shrink:0;" title="드래그로 순서 변경">⠿</span>`;
 
-function updateStatusBar(){
+const FS_DOC_LIMIT=1048576;   // Firestore 문서 1개 상한 (1 MiB)
+const encoder=new TextEncoder();
+
+// 한글은 UTF-8에서 3바이트라 글자 수만 보면 실제 크기를 절반 이하로 착각한다.
+function docBytes(html){return encoder.encode(html||"").length;}
+
+function renderStatusBar(){
   const file=state.files.find(f=>f.id===state.activeTab);
   const t=T(),sb=document.getElementById("statusbar");if(!sb)return;
-  const txt=file?htmlToText(file.content):"";
-  sb.innerHTML=file
-    ?`<span>${esc(file.name)}</span><span>줄: ${txt.split("\n").length}</span><span>글자: ${txt.length}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
-    :`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`;
+  const tail=`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`;
+  if(!file){sb.innerHTML=tail;return;}
+
+  const txt=htmlToText(file.content);
+  const bytes=docBytes(file.content),pct=Math.round(bytes*100/FS_DOC_LIMIT);
+  const near=pct>=75;
+  const cap=`<span style="${near?`color:${pct>=90?"#f87171":"#fbbf24"};font-weight:700;`:""}"
+    title="Firestore는 문서 하나에 1 MiB까지만 저장할 수 있습니다. 넘으면 저장이 실패하니 문서를 나눠 주세요.">
+    ${(bytes/1024).toFixed(0)}KB${near?` · 상한의 ${pct}%`:""}</span>`;
+
+  sb.innerHTML=`<span>${esc(file.name)}</span><span>줄: ${txt.split("\n").length.toLocaleString()}</span>`
+    +`<span>글자: ${txt.length.toLocaleString()}</span>${cap}`
+    +`<span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span>${tail}`;
+}
+
+// 큰 원고에서 htmlToText 가 무거워 타이핑이 밀린다. 통계는 늦춰서 계산한다.
+let statTimer=null;
+function updateStatusBar(immediate){
+  clearTimeout(statTimer);
+  if(immediate){renderStatusBar();return;}
+  statTimer=setTimeout(renderStatusBar,250);
+}
+
+// ─── 확인 모달 ────────────────
+// 네이티브 confirm() 은 환경에 따라 조용히 false 로 처리되므로 쓰지 않는다.
+function askConfirm(opts){state.confirmDialog=opts;render();}
+
+function renderConfirm(t,fontFamily){
+  if(!state.confirmDialog) return "";
+  const {title,message,detail,okLabel}=state.confirmDialog;
+  return `
+  <div onclick="window._cfNo()" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:3000;display:flex;align-items:center;justify-content:center;">
+    <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;padding:22px;max-width:380px;width:calc(100% - 40px);box-shadow:0 16px 40px rgba(0,0,0,0.4);font-family:${fontFamily};">
+      <div style="font-size:15px;font-weight:700;color:${t.tx};margin-bottom:10px;">${esc(title)}</div>
+      <div style="font-size:13px;color:${t.tx};line-height:1.65;">${message}</div>
+      ${detail?`<div style="font-size:11.5px;color:${t.mt};line-height:1.6;margin-top:8px;padding:8px 10px;background:${t.bg};border-radius:6px;border:1px solid ${t.bd};">${detail}</div>`:""}
+      <div style="display:flex;gap:8px;margin-top:18px;">
+        <button onclick="window._cfYes()" style="flex:1;background:#f87171;border:1px solid #f87171;color:#fff;border-radius:6px;padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">${esc(okLabel||"삭제")}</button>
+        <button onclick="window._cfNo()" style="flex:1;${btnC(t)};padding:9px;font-size:13px;">취소</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 // ─── 이동 모달 렌더링 ─────────
@@ -503,7 +639,7 @@ function renderFolderTree(parentId,depth){
         ${state.renamingFolderId===folder.id
           ?`<input id="renameFolderInput" value="${esc(state.renamingFolderVal)}" onclick="event.stopPropagation()"
               oninput="window._rfi(this.value)"
-              onkeydown="if(event.key==='Enter')window._rfc('${folder.id}');if(event.key==='Escape'){state.renamingFolderId=null;render();}"
+              onkeydown="if(event.key==='Enter')window._rfc('${folder.id}');if(event.key==='Escape')window._rfEsc();"
               onblur="window._rfc('${folder.id}')"
               style="font-size:${depth>0?11:12}px;font-weight:600;flex:1;background:transparent;border:none;border-bottom:1px solid ${t.ac};outline:none;color:${t.tx};font-family:inherit;padding:0;"/>`
           :`<span style="font-size:${depth>0?11:12}px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(folder.name)}</span>`}
@@ -565,7 +701,6 @@ function render(){
   const activeFile=state.files.find(f=>f.id===state.activeTab);
   const tabFiles  =state.tabs.map(tab=>state.files.find(f=>f.id===tab.fileId)).filter(Boolean);
   const isTxt     =activeFile?.name.toLowerCase().endsWith(".txt");
-  const txt       =activeFile?htmlToText(activeFile.content):"";
 
   document.body.innerHTML=`
   <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden;font-family:${fontFamily};">
@@ -691,11 +826,7 @@ function render(){
             </div>`}
 
         <!-- Status bar -->
-        <div id="statusbar" style="display:flex;align-items:center;gap:16px;padding:3px 16px;background:${t.sb};border-top:1px solid ${t.bd};font-size:10px;color:${t.mt};flex-shrink:0;">
-          ${activeFile
-            ?`<span>${esc(activeFile.name)}</span><span>줄: ${txt.split("\n").length}</span><span>글자: ${txt.length}</span><span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span><div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`
-            :`<div style="flex:1"></div><span>F5: 날짜 삽입 · Ctrl+H: 찾기/바꾸기</span>`}
-        </div>
+        <div id="statusbar" style="display:flex;align-items:center;gap:16px;padding:3px 16px;background:${t.sb};border-top:1px solid ${t.bd};font-size:10px;color:${t.mt};flex-shrink:0;"></div>
       </div>
     </div>
 
@@ -726,9 +857,13 @@ function render(){
 
     <!-- 이동 모달 -->
     ${renderMoveModal(t,fontFamily)}
+
+    <!-- 확인 모달 -->
+    ${renderConfirm(t,fontFamily)}
   </div>`;
 
   if(activeFile){const ed=document.getElementById("editor");if(ed)ed.innerHTML=textToHTML(activeFile.content);}
+  updateStatusBar(true);setSaveIndicator();
   if(state.renamingId) setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
   if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
   setTimeout(initSortables,0);
@@ -754,10 +889,8 @@ function render(){
   window._nf=newFile;
   window._at=(id)=>{
     const ed=document.getElementById("editor");
-    if(ed&&state.activeTab){
-      state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
-      state.scrollPositions={...state.scrollPositions,[state.activeTab]:ed.scrollTop};
-    }
+    if(ed&&state.activeTab) state.scrollPositions={...state.scrollPositions,[state.activeTab]:ed.scrollTop};
+    commitEditor();
     const prevScroll=document.getElementById("tabBar")?.scrollLeft||0;
     state.activeTab=id;render();
     const tabBar=document.getElementById("tabBar");
@@ -765,11 +898,7 @@ function render(){
     const newEd=document.getElementById("editor");
     if(newEd) newEd.scrollTop=state.scrollPositions[id]||0;
   };
-  window._ct=(fileId)=>{
-    const ed=document.getElementById("editor");
-    if(ed&&state.activeTab) state.files=state.files.map(f=>f.id===state.activeTab?{...f,content:ed.innerHTML}:f);
-    closeTab(fileId);
-  };
+  window._ct=(fileId)=>{commitEditor();closeTab(fileId);};
   window._tc=handleTextChange;
   window._fmt=applyFormat;
   window._export=exportFile;
@@ -789,9 +918,32 @@ function render(){
   window._ctxA=(a,id)=>{
     if     (a==="rename")        {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
     else if(a==="renamefolder")  {state.renamingFolderId=id;state.renamingFolderVal=state.folders.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();setTimeout(()=>{const el=document.getElementById("renameFolderInput");if(el){el.focus();el.select();}},50);}
-    else if(a==="delfile")     deleteFile(id);
+    else if(a==="delfile"){
+      const f=state.files.find(x=>x.id===id);
+      const chars=htmlToText(f?.content||"").length;
+      state.contextMenu=null;
+      askConfirm({
+        title:"문서 삭제",
+        message:`<b>${esc(f?.name||"")}</b> 문서를 삭제합니다.`,
+        detail:`본문 ${chars.toLocaleString()}자 · 되돌릴 수 없습니다.`,
+        onConfirm:()=>deleteFile(id),
+      });
+    }
     else if(a==="newfile")     {newFile(id);state.contextMenu=null;}
-    else if(a==="delfolder")   deleteFolder(id);
+    else if(a==="delfolder"){
+      const folder=state.folders.find(x=>x.id===id);
+      const allIds=getAllDescendantFolderIds(id);
+      const victims=state.files.filter(f=>allIds.includes(f.folderId));
+      const chars=victims.reduce((n,f)=>n+htmlToText(f.content||"").length,0);
+      state.contextMenu=null;
+      askConfirm({
+        title:"폴더 삭제",
+        message:`<b>${esc(folder?.name||"")}</b> 폴더를 삭제합니다.<br>안에 든 것도 <b>전부 함께</b> 지워집니다.`,
+        detail:`하위 폴더 ${allIds.length-1}개 · 문서 ${victims.length}개 · 본문 ${chars.toLocaleString()}자<br>되돌릴 수 없습니다.`,
+        okLabel:`${victims.length}개 문서 삭제`,
+        onConfirm:()=>deleteFolder(id),
+      });
+    }
     else if(a==="newsubfolder"){state.newFolderMode=true;state.newFolderParentId=id;state.contextMenu=null;render();}
     else if(a==="movefile")    {state.moveModal={itemId:id,itemType:"file"};state.contextMenu=null;render();}
     else if(a==="movefolder")  {state.moveModal={itemId:id,itemType:"folder"};state.contextMenu=null;render();}
@@ -802,8 +954,11 @@ function render(){
     else                    moveFolderTo(itemId, targetId==="__root__"?null:targetId);
   };
   window._closeMoveModal=()=>{state.moveModal=null;render();};
+  window._cfYes=()=>{const cb=state.confirmDialog?.onConfirm;state.confirmDialog=null;render();if(cb)cb();};
+  window._cfNo =()=>{state.confirmDialog=null;render();};
   window._rfi=(v)=>{state.renamingFolderVal=v;};
   window._rfc=(id)=>commitFolderRename(id);
+  window._rfEsc=()=>{state.renamingFolderId=null;state.renamingFolderVal="";render();};
   window._findDir=(dir)=>handleFind(dir);
   window._changeColor=(id,color)=>changeFolderColor(id,color);
   window._paste=(e)=>{
@@ -822,7 +977,7 @@ function render(){
     if((e.ctrlKey||e.metaKey)&&(e.key==="h"||e.key==="f")){e.preventDefault();state.findOpen=true;render();setTimeout(()=>document.getElementById("findInput")?.focus(),50);}
     if(e.key==="Escape"){
       const st=document.getElementById("editor")?.scrollTop||0;
-      state.contextMenu=null;state.findOpen=false;state.moveModal=null;render();
+      state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.confirmDialog=null;render();
       const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
     }
     if((e.ctrlKey||e.metaKey)&&(e.key==="="||e.key==="+")){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
