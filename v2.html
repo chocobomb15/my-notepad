@@ -158,10 +158,9 @@ button{font-family:inherit;font-size:inherit;color:inherit}
    탭 바
    ============================================================ */
 .tabbar{
-  height:var(--tabbar-h);flex:0 0 auto;
+  height:var(--tabbar-h);flex:1 1 auto;min-width:0;
   display:flex;align-items:stretch;
   background:var(--bg-sunken);
-  border-bottom:1px solid var(--border);
   overflow-x:auto;overflow-y:hidden;
   user-select:none;
 }
@@ -189,11 +188,18 @@ button{font-family:inherit;font-size:inherit;color:inherit}
 .tab .x:hover{background:var(--bg-hover);opacity:1;color:var(--danger)}
 .tab:not(:hover):not(.on) .x{visibility:hidden}
 .tab.drag-over{background:var(--accent-soft)}
-.tabbar .newtab{
-  width:34px;flex:0 0 auto;border:0;background:transparent;cursor:pointer;
-  color:var(--fg-dim);font-size:18px;line-height:1;
+/* --- 탭 바 좌우 스크롤 (구버전과 동일) --- */
+.tabrow{
+  display:flex;align-items:stretch;flex:0 0 auto;
+  background:var(--bg-sunken);border-bottom:1px solid var(--border);
 }
-.tabbar .newtab:hover{background:var(--bg-hover);color:var(--fg)}
+.tabscroll{
+  width:28px;flex:0 0 auto;border:0;background:transparent;cursor:pointer;
+  color:var(--fg-dim);font-size:11px;line-height:1;
+}
+.tabscroll:hover{background:var(--bg-hover);color:var(--fg)}
+.tabscroll:first-child{border-right:1px solid var(--border)}
+.tabscroll:last-child{border-left:1px solid var(--border)}
 
 /* ============================================================
    본문
@@ -665,6 +671,11 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
 
     <div class="tb-sep"></div>
 
+    <button class="btn icon" id="btnUndo" title="되돌리기 (Ctrl+Z)">↶</button>
+    <button class="btn icon" id="btnRedo" title="다시 실행 (Ctrl+Shift+Z)">↷</button>
+
+    <div class="tb-sep"></div>
+
     <div class="segmented" id="modeSwitch">
       <button data-mode="view" title="보기 모드 (Ctrl+1)">👁 보기</button>
       <button data-mode="split" title="분할 모드 (Ctrl+2)">◫ 분할</button>
@@ -700,7 +711,11 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
   <!-- 탭 바 --><!-- 새 문서는 상단 바의 "+ 새 문서" 버튼 하나로 통일한다.
        예전엔 이 자리에도 + 버튼이 있었지만, 폴더를 열면 문서가 전부
        탭으로 뜨는 구조라 탭이 많아지면 스크롤 끝까지 가야 닿았다. -->
-  <div class="tabbar" id="tabbar"></div>
+  <div class="tabrow">
+    <button class="tabscroll" id="tabLeft" title="탭 왼쪽으로">◀</button>
+    <div class="tabbar" id="tabbar"></div>
+    <button class="tabscroll" id="tabRight" title="탭 오른쪽으로">▶</button>
+  </div>
 
   <!-- 본문 -->
   <div class="body">
@@ -1583,6 +1598,8 @@ function setActive(id) {
     D.editor.value = '';
     document.title = 'NOTEPAD';
   }
+  if (t && !hist.has(t.id)) histInit(t.id, t.content);
+  updateUndoButtons();
   renderTabs();
   renderPreview();
   renderTree();      // 탐색기의 현재 문서 표시도 같이 옮긴다
@@ -1605,6 +1622,7 @@ function closeTab(id, skipConfirm) {
   // flushTab 은 첫 await 전에 탭 객체를 잡아두므로 아래에서 배열에서
   // 빼도 안전하다.
   if (isDirty(t) || saveTimers.has(id)) flushTab(id);
+  hist.delete(id);
   state.tabs.splice(idx, 1);
   if (state.active === id) {
     const next = state.tabs[idx] || state.tabs[idx - 1];
@@ -2067,6 +2085,38 @@ function downloadText(name, text, mime) {
   a.href = url; a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+/* --- 내려받기 (구버전의 ↓.txt / ↓.md) ----------------------------------
+   v2 는 본문을 마크다운으로 들고 있으므로 .md 는 원문 그대로 나간다.
+   .txt 는 문법 기호를 걷어낸 순수 글자만 남긴다. */
+function mdToPlainText(md) {
+  return String(md || '')
+    .replace(/^```[\s\S]*?^```$/gm, m => m.replace(/^```.*$/gm, ''))  // 코드 울타리 줄만 제거
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')       // 이미지 → 설명
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')        // 링크 → 글자
+    .replace(/<\/?u>/gi, '')                        // 밑줄 태그
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')             // 제목 기호
+    .replace(/^\s{0,3}>\s?/gm, '')                  // 인용
+    .replace(/^(\s*)[-*+]\s+/gm, '$1')              // 글머리
+    .replace(/^(\s*)\d{1,9}[.)]\s+/gm, '$1')        // 번호
+    .replace(/\*\*\*([\s\S]*?)\*\*\*/g, '$1')
+    .replace(/\*\*([\s\S]*?)\*\*/g, '$1')
+    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/~~([\s\S]*?)~~/g, '$1')
+    .replace(/==([\s\S]*?)==/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\\([\\`*_{}\[\]()#+\-.!>~|=])/g, '$1'); // 이스케이프 해제 — 마지막에
+}
+
+function exportDoc(format) {
+  const t = activeTab();
+  if (!t) { toast('열려 있는 문서가 없습니다.'); return; }
+  stash();
+  const base = t.name.replace(/\.(md|markdown|txt)$/i, '') || '문서';
+  const text = format === 'md' ? t.content : mdToPlainText(t.content);
+  downloadText(base + '.' + format, text, 'text/plain');
+  toast(base + '.' + format + ' 내려받았습니다');
 }
 
 function exportHtml() {
@@ -2880,6 +2930,69 @@ function insertDateTime() {
 
 const scheduleRender = debounce(() => { renderPreview(); updateStatus(); }, 140);
 
+/* ---- 되돌리기 / 다시 실행 ----------------------------------------------
+   탭마다 이력을 따로 들고 간다. textarea 가 원래 갖고 있는 되돌리기는
+   value 를 코드로 갈아끼우는 순간 통째로 사라지는데, 이 앱은 탭을 바꿀
+   때마다 그렇게 한다. 그래서 브라우저 것에 기댈 수 없다. */
+const HIST_MAX = 300;
+const hist = new Map();   // tabId -> {stack:[{text,sel}], idx}
+
+function histInit(tabId, text) {
+  hist.set(tabId, { stack: [{ text: text || '', sel: 0 }], idx: 0 });
+}
+function histPush(tabId, text, sel) {
+  const h = hist.get(tabId);
+  if (!h) { histInit(tabId, text); return; }
+  if (h.stack[h.idx] && h.stack[h.idx].text === text) return;
+  h.stack = h.stack.slice(0, h.idx + 1);      // 되돌린 뒤 새로 치면 앞쪽 갈래는 버린다
+  h.stack.push({ text, sel });
+  if (h.stack.length > HIST_MAX) h.stack.shift();
+  h.idx = h.stack.length - 1;
+}
+// 타이핑 중에는 일정 간격으로만 지점을 남긴다. 글자마다 남기면 한 번
+// 되돌릴 때 한 글자씩만 사라져 쓸모가 없다.
+const histPushSoon = debounce(() => {
+  const t = activeTab();
+  if (t) histPush(t.id, D.editor.value, D.editor.selectionStart);
+  updateUndoButtons();
+}, 400);
+
+function histMove(dir) {
+  const t = activeTab();
+  if (!t) return;
+  let h = hist.get(t.id);
+  if (!h) { histInit(t.id, D.editor.value); h = hist.get(t.id); }
+  // 아직 안 남긴 최신 상태가 있으면 먼저 남긴다. 안 그러면 방금 친 것이
+  // 되돌리기 대상에서 빠진다.
+  if (h.stack[h.idx].text !== D.editor.value) histPush(t.id, D.editor.value, D.editor.selectionStart);
+
+  const next = h.idx + dir;
+  if (next < 0 || next >= h.stack.length) return;
+  h.idx = next;
+  const snap = h.stack[next];
+  D.editor.value = snap.text;
+  try { D.editor.setSelectionRange(snap.sel, snap.sel); } catch (e) {}
+  t.content = snap.text;
+  const tabEl = D.tabbar.querySelector('.tab[data-id="' + t.id + '"]');
+  if (tabEl) tabEl.classList.toggle('dirty', isDirty(t));
+  scheduleRender();
+  if (t.docId) scheduleSave(t.id);
+  updateUndoButtons();
+  persist();
+}
+const undo = () => histMove(-1);
+const redo = () => histMove(1);
+
+function updateUndoButtons() {
+  const t = activeTab();
+  const h = t ? hist.get(t.id) : null;
+  const canU = !!h && (h.idx > 0 || h.stack[h.idx].text !== D.editor.value);
+  const canR = !!h && h.idx < h.stack.length - 1;
+  const bu = $('#btnUndo'), br = $('#btnRedo');
+  if (bu) bu.disabled = !canU;
+  if (br) br.disabled = !canR;
+}
+
 function onEditorInput() {
   const t = activeTab();
   if (!t) return;
@@ -2887,6 +3000,7 @@ function onEditorInput() {
   const tabEl = D.tabbar.querySelector('.tab[data-id="' + t.id + '"]');
   if (tabEl) tabEl.classList.toggle('dirty', isDirty(t));
   scheduleRender();
+  histPushSoon();
   if (t.docId) scheduleSave(t.id);
   persist();
 }
@@ -3074,7 +3188,9 @@ function showMore() {
     + '<span><b style="display:block">' + label + '</b>'
     + (sub ? '<span style="color:var(--fg-dim);font-size:12px">' + sub + '</span>' : '') + '</span></button>';
   openSheet('더보기',
-      item('export',   '🌐', 'HTML로 내보내기',   '스타일이 포함된 단일 HTML 파일')
+      item('dlMd',     '⬇', '.md 로 내려받기',   '마크다운 원문 그대로')
+    + item('dlTxt',    '⬇', '.txt 로 내려받기',  '문법 기호를 뺀 글자만')
+    + item('export',   '🌐', 'HTML로 내보내기',   '스타일이 포함된 단일 HTML 파일')
     + item('print',    '🖨', '인쇄 / PDF로 저장',  'Ctrl+P')
     + item('copyMd',   '📋', '마크다운 원문 복사', '')
     + item('width',    '↔', '문서 폭 바꾸기',     '현재 ' + (state.width ? state.width + 'px' : '전체 너비'))
@@ -3096,6 +3212,7 @@ function showHelp() {
     + row('Ctrl++', '글자 크게') + row('Ctrl+-', '글자 작게') + row('Ctrl+0', '글자 크기 초기화')
     + row('Ctrl+Tab', '다음 탭') + row('Ctrl+Shift+Tab', '이전 탭')
     + '</table><h4>편집</h4><table>'
+    + row('Ctrl+Z', '되돌리기') + row('Ctrl+Shift+Z', '다시 실행')
     + row('Ctrl+B', '굵게') + row('Ctrl+I', '기울임') + row('Ctrl+K', '링크')
     + row('Tab', '들여쓰기 (선택 영역)') + row('Shift+Tab', '내어쓰기')
     + row('Enter', '목록 · 인용문 자동 이어쓰기')
@@ -3118,7 +3235,9 @@ $('#modalBody').addEventListener('click', e => {
   const act = b.dataset.act;
   closeSheet();
   if (act === 'doDelete') { deleteSelection(); return; }
-  if (act === 'export') exportHtml();
+  if (act === 'dlMd') exportDoc('md');
+  else if (act === 'dlTxt') exportDoc('txt');
+  else if (act === 'export') exportHtml();
   else if (act === 'print') printDoc();
   else if (act === 'copyMd') {
     const t = activeTab();
@@ -3143,6 +3262,10 @@ $('#btnZoomIn').addEventListener('click', () => setZoom(state.zoom + 0.1));
 $('#btnZoomOut').addEventListener('click', () => setZoom(state.zoom - 0.1));
 $('#zoomVal').addEventListener('click', () => setZoom(1));   // 눌러서 100% 로
 $('#btnNew').addEventListener('click', newDocFlow);
+$('#btnUndo').addEventListener('click', () => { D.editor.focus(); undo(); });
+$('#btnRedo').addEventListener('click', () => { D.editor.focus(); redo(); });
+$('#tabLeft').addEventListener('click', () => { D.tabbar.scrollLeft -= 200; });
+$('#tabRight').addEventListener('click', () => { D.tabbar.scrollLeft += 200; });
 $('#btnSave').addEventListener('click', () => saveNow());
 $('#btnFind').addEventListener('click', () => (D.findbar.classList.contains('on') ? closeFind() : openFind()));
 $('#btnToc').addEventListener('click', () => {
@@ -3322,6 +3445,10 @@ window.addEventListener('keydown', e => {
   // Ctrl+N 은 뺐다 — Chrome/Edge 가 "새 창" 으로 미리 예약해 둔 단축키라
   // 페이지에서 preventDefault() 해도 막히지 않는다. 새 문서는 상단
   // "+ 새 문서" 버튼이나 폴더 우클릭 메뉴로 만든다.
+  // 되돌리기는 우리 이력을 쓴다. 브라우저 기본 동작은 막아야 두 이력이
+  // 엇갈리지 않는다.
+  else if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (k === 'y') { e.preventDefault(); redo(); }
   else if (k === 's') { e.preventDefault(); saveNow(); }
   else if (k === 'w') { e.preventDefault(); if (state.active) closeTab(state.active); }
   else if (k === 'f') { e.preventDefault(); openFind(); }
@@ -3378,7 +3505,7 @@ function boot() {
   D.tree.hidden = state.sidebarView !== 'tree';
   D.toc.hidden  = state.sidebarView !== 'toc';
 
-  renderTabs(); renderPreview(); updateStatus(); renderTree();
+  renderTabs(); renderPreview(); updateStatus(); renderTree(); updateUndoButtons();
 
   // 기억해 둔 비밀번호가 있으면 게이트를 건너뛴다 (onAuthStateChanged 가 처리)
   if (localStorage.getItem('notepad_authed') === '1') {
