@@ -1399,7 +1399,7 @@ const FS_DOC_LIMIT = 1048576;          // Firestore 문서 하나의 상한 (1 M
 
 const state = {
   tabs: [], active: null,
-  mode: 'split', theme: 'light', zoom: 1, sidebar: true, width: 860,
+  mode: 'split', theme: 'light', zoom: 1, sidebar: true, width: 0,   // 0 = 전체 너비
   sidebarView: 'tree',                 // 'tree' | 'toc'
   folders: [], files: [],              // Firestore 원본 (본문 포함)
   trashFolders: [], trashFiles: [],
@@ -1471,9 +1471,11 @@ function closeTab(id, skipConfirm) {
   if (idx < 0) return;
   const t = state.tabs[idx];
   if (t.id === state.active) stash();
-  if (!skipConfirm && isDirty(t)) {
-    if (!confirm('“' + t.name + '”에 저장하지 않은 변경 사항이 있습니다.\n그래도 닫을까요?')) return;
-  }
+  // 닫기 전에 대기 중인 저장을 밀어넣는다. 폴더를 전환하면 탭이 무더기로
+  // 닫히는데, 그때 아직 안 올라간 편집분이 그대로 사라지면 안 된다.
+  // flushTab 은 첫 await 전에 탭 객체를 잡아두므로 아래에서 배열에서
+  // 빼도 안전하다.
+  if (isDirty(t) || saveTimers.has(id)) flushTab(id);
   state.tabs.splice(idx, 1);
   if (state.active === id) {
     const next = state.tabs[idx] || state.tabs[idx - 1];
@@ -1601,8 +1603,10 @@ function updateStatus() {
   const mins  = Math.max(1, Math.round(noSp / 500 + words / 250));
 
   const dirty = isDirty(t);
-  D.saveState.textContent = dirty ? '● 저장 안 됨' : '읽기 전용';
-  D.saveState.className = 'chip ' + (dirty ? 'dirty' : 'ok');
+  if (saveError)                 { D.saveState.textContent = '⚠ 저장 실패'; D.saveState.className = 'chip dirty'; D.saveState.title = saveError; }
+  else if (savingNow.size)       { D.saveState.textContent = '저장 중…';    D.saveState.className = 'chip'; D.saveState.title = ''; }
+  else if (dirty)                { D.saveState.textContent = '● 저장 대기'; D.saveState.className = 'chip dirty'; D.saveState.title = ''; }
+  else                           { D.saveState.textContent = '✓ 저장됨';    D.saveState.className = 'chip ok'; D.saveState.title = ''; }
   D.filePath.textContent = t.path ? t.path + ' / ' + t.name : t.name;
   D.filePath.title = D.filePath.textContent;
   D.statHead.textContent = '제목 ' + ((t.headings || []).length);
@@ -1626,6 +1630,9 @@ function updateStatus() {
 /* ============================ 7. Firestore ============================= */
 const foldersCol = () => collection(db, 'users', DATA_PATH, 'folders');
 const filesCol   = () => collection(db, 'users', DATA_PATH, 'files');
+// 마크다운으로 옮기기 전의 원본 HTML 을 보관하는 곳.
+// 한 문서에 원본과 마크다운을 같이 두면 가장 큰 원고가 1 MiB 상한을 넘는다.
+const legacyCol  = () => collection(db, 'users', DATA_PATH, 'legacy');
 
 // 내가 쓴 updatedAt 을 기억해 둔다. 서버가 확인해준 내 저장이 스냅샷으로
 // 돌아올 때 남의 변경으로 오인하지 않기 위해서다.
@@ -1675,8 +1682,10 @@ function applyRemote(kind, snap) {
     state.folders      = docs.filter(f => !f.deletedAt).sort(byOrder);
     state.trashFolders = docs.filter(f => f.deletedAt);
   } else {
+    const prev = new Map(state.files.map(f => [f.id, f]));
     state.files      = docs.filter(f => !f.deletedAt).sort(byOrder);
     state.trashFiles = docs.filter(f => f.deletedAt);
+    reconcileTabs(prev);
   }
 
   seenFirst[kind] = true;
@@ -1685,6 +1694,38 @@ function applyRemote(kind, snap) {
     restoreTabs(savedSession);      // 문서를 다 받은 뒤에 저장돼 있던 탭을 되살린다
   }
   renderTree();
+}
+
+/* 열어 둔 탭과 서버 내용을 맞춘다.
+   편집 중이던 문서를 원격 내용으로 덮으면 치던 글이 날아간다. 그래서
+   편집분이 남아 있으면 덮지 않고 알리기만 하고, 깨끗한 탭만 갱신한다. */
+function reconcileTabs(prev) {
+  for (const t of state.tabs) {
+    if (!t.docId) continue;
+    const rf = state.files.find(f => f.id === t.docId);
+    if (!rf) continue;
+    const before = prev.get(t.docId);
+    if (before && before.updatedAt === rf.updatedAt) continue;      // 안 바뀜
+    const mine = myWrites.get(rf.id);
+    if (rf.updatedAt && mine && mine.has(rf.updatedAt)) continue;   // 내 저장이 돌아온 것
+
+    if (isDirty(t) || saveTimers.has(t.id)) {
+      if (!t.conflict) {
+        t.conflict = true;
+        toast('⚠ "' + t.name + '" 가 다른 곳에서 수정되었습니다. 저장하면 그 변경을 덮어씁니다.');
+      }
+      continue;
+    }
+    const md = docToMd(rf);
+    t.content = md; t.saved = md; t.name = rf.name;
+    if (t.id === state.active) {
+      const pos = D.editor.selectionStart;
+      D.editor.value = md;
+      try { D.editor.setSelectionRange(pos, pos); } catch (e) {}
+      lastRendered = null; renderPreview();
+    }
+  }
+  renderTabs(); updateStatus();
 }
 
 /* --- HTML → 마크다운 --------------------------------------------------
@@ -1778,6 +1819,85 @@ function htmlToMd(html) {
 
 // 이미 마크다운으로 옮긴 문서는 md 필드를 쓰고, 아직인 문서는 그때그때 변환한다.
 const docToMd = f => (f.format === 'md' && typeof f.md === 'string') ? f.md : htmlToMd(f.content);
+
+/* --- 저장 엔진 ---------------------------------------------------------
+   타이머를 문서별로 둔다. 전역 타이머 하나를 쓰면 A를 치다가 타이머가
+   끝나기 전에 B로 넘어갔을 때 A의 저장이 취소된 채 사라진다. 구버전에서
+   실제로 일어나던 사고다. */
+const saveTimers = new Map();     // tabId -> timer
+const savingNow  = new Set();
+let saveError = null;
+
+function scheduleSave(tabId) {
+  clearTimeout(saveTimers.get(tabId));
+  saveTimers.set(tabId, setTimeout(() => flushTab(tabId), 800));
+  updateStatus();
+}
+
+async function writeDoc(t) {
+  const f = state.files.find(x => x.id === t.docId);
+  if (!f) throw new Error('문서를 찾을 수 없습니다');
+
+  const md = t.content;
+  if (docBytes(md) > FS_DOC_LIMIT - 8192) throw new Error('LIMIT');
+
+  const now = Date.now();
+
+  // 아직 옮기지 않은 문서라면 원본 HTML 을 먼저 따로 보관한다.
+  // 이 쓰기가 실패하면 아래로 진행하지 않으므로 원본이 사라질 일이 없다.
+  if (f.format !== 'md') {
+    await setDoc(doc(legacyCol(), f.id), {
+      id: f.id, name: f.name, html: String(f.content ?? ''),
+      folderId: f.folderId ?? null, savedAt: now,
+    });
+  }
+
+  const next = { ...f, md, format: 'md', schema: 2, updatedAt: now };
+  delete next.content;   // 원본은 legacy 로 옮겼다. 둘 다 두면 상한을 넘는다.
+  noteWrite(f.id, now);
+  await setDoc(doc(filesCol(), f.id), next);
+}
+
+async function flushTab(tabId) {
+  clearTimeout(saveTimers.get(tabId));
+  saveTimers.delete(tabId);
+  const t = state.tabs.find(x => x.id === tabId);   // await 전에 잡아둔다
+  if (!t || !t.docId || t.content === t.saved) return;
+
+  savingNow.add(tabId);
+  updateStatus();
+  try {
+    await writeDoc(t);
+    t.saved = t.content;
+    saveError = null;
+  } catch (e) {
+    saveError = e && e.message === 'LIMIT'
+      ? '문서가 1 MiB 상한을 넘어 저장하지 못했습니다. 문서를 나눠 주세요.'
+      : ((e && (e.code || e.message)) || String(e));
+    console.error('저장 실패:', t.name, e);
+    toast('⚠ 저장 실패 — ' + saveError);
+  } finally {
+    savingNow.delete(tabId);
+  }
+  renderTabs(); updateStatus();
+}
+
+const flushAll = () => Promise.all([...saveTimers.keys()].map(flushTab));
+
+// Ctrl+S — 자동 저장이 이미 돌지만, 지금 바로 올리고 싶을 때를 위해 남긴다.
+async function saveNow() {
+  const t = activeTab();
+  if (!t) return;
+  stash();
+  if (!t.docId) { toast('아직 문서에 연결되지 않은 탭입니다.'); return; }
+  if (!isDirty(t) && !saveError) { toast('이미 저장돼 있습니다.'); return; }
+  await flushTab(t.id);
+  if (!saveError) toast('저장했습니다 · ' + t.name);
+}
+
+// 창을 떠날 때 대기 중인 저장을 밀어넣는다.
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushAll(); });
+window.addEventListener('pagehide', () => { flushAll(); });
 
 /* --- 문서 열기 --------------------------------------------------------- */
 function openDoc(fileId) {
@@ -1986,7 +2106,7 @@ const persist = debounce(() => {
   try {
     stash();
     localStorage.setItem(LS_KEY, JSON.stringify({
-      v: 2, mode: state.mode, theme: state.theme, zoom: state.zoom,
+      v: 4, mode: state.mode, theme: state.theme, zoom: state.zoom,
       sidebar: state.sidebar, width: state.width, sidebarView: state.sidebarView,
       openFolders: state.openFolders,
       openDocs: state.tabs.map(t => t.docId).filter(Boolean),
@@ -2002,7 +2122,9 @@ function restoreUI() {
   state.mode        = data.mode  || 'split';
   state.theme       = data.theme || 'light';
   state.zoom        = data.zoom  || 1;
-  state.width       = data.width || 860;
+  // 문서 폭 기본값을 전체 너비로 바꿨다. v4 이전에 저장된 값은 사용자가
+  // 고른 것이 아니라 옛 기본값(860)이므로 무시한다.
+  state.width       = (data.v >= 4) ? (data.width ?? 0) : 0;
   state.sidebar     = data.sidebar !== false;
   state.sidebarView = data.sidebarView || 'tree';
   state.openFolders = Array.isArray(data.openFolders) ? data.openFolders : [];
@@ -2163,9 +2285,10 @@ function onEditorInput() {
   const t = activeTab();
   if (!t) return;
   t.content = D.editor.value;
-  const wasDirty = D.tabbar.querySelector('.tab[data-id="' + t.id + '"]');
-  if (wasDirty) wasDirty.classList.toggle('dirty', isDirty(t));
+  const tabEl = D.tabbar.querySelector('.tab[data-id="' + t.id + '"]');
+  if (tabEl) tabEl.classList.toggle('dirty', isDirty(t));
   scheduleRender();
+  if (t.docId) scheduleSave(t.id);
   persist();
 }
 
@@ -2381,11 +2504,12 @@ function showHelp() {
     + '</table><h4>찾기</h4><table>'
     + row('Ctrl+F', '문서에서 찾기') + row('Enter', '다음 결과') + row('Shift+Enter', '이전 결과') + row('Esc', '닫기')
     + '</table>'
-    + '<h4>지금 단계</h4>'
-    + '<p style="margin:0 0 8px"><b>읽기 전용 미리보기</b>입니다. 왼쪽 폴더에서 문서를 골라 여는 것까지 동작하며, '
-    + '편집과 저장은 아직 붙지 않았습니다. 지금은 데이터에 아무것도 쓰지 않습니다.</p>'
-    + '<p style="margin:0 0 8px">보고 계신 문서는 저장된 HTML 을 <b>마크다운으로 변환한 결과</b>입니다. '
-    + '원본은 그대로 있고, 변환은 화면에서만 일어납니다.</p>'
+    + '<h4>저장 방식</h4>'
+    + '<p style="margin:0 0 8px">고치면 <b>0.8초 뒤 자동 저장</b>됩니다. 상태는 하단 왼쪽에 표시됩니다. '
+    + '탭을 닫거나 폴더를 옮길 때도 대기 중인 저장을 먼저 올립니다.</p>'
+    + '<p style="margin:0 0 8px">문서를 처음 고치는 순간 마크다운으로 옮겨집니다. '
+    + '<b>옮기기 전의 원본 HTML 은 따로 보관</b>되며 지워지지 않습니다.</p>'
+    + '<p style="margin:0 0 8px">아직 붙지 않은 것: 새 문서 · 이름 바꾸기 · 삭제 · 휴지통.</p>'
     + '<p style="margin:0;color:var(--fg-dim);font-size:12.5px">데이터 경로: <code>users/' + esc(DATA_PATH) + '</code></p>');
 }
 
@@ -2415,9 +2539,9 @@ $('#modalBody').addEventListener('click', e => {
 /* ============================ 13. 이벤트 연결 ========================== */
 const notYet = () => toast('읽기 전용 단계입니다. 편집·저장은 다음 단계에서 붙습니다.');
 $('#btnSidebar').addEventListener('click', () => toggleSidebar());
-$('#btnNew').addEventListener('click', notYet);
+$('#btnNew').addEventListener('click', notYet);      // 새 문서 만들기는 3-4 에서
 $('#btnNewTab').addEventListener('click', notYet);
-$('#btnSave').addEventListener('click', notYet);
+$('#btnSave').addEventListener('click', () => saveNow());
 $('#btnFind').addEventListener('click', () => (D.findbar.classList.contains('on') ? closeFind() : openFind()));
 $('#btnToc').addEventListener('click', () => {
   // 사이드바가 닫혀 있으면 열면서 목차로, 이미 목차를 보고 있으면 닫는다
@@ -2594,7 +2718,7 @@ window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'o') { e.preventDefault(); toggleSidebar(true); }
   else if (k === 'n') { e.preventDefault(); newDoc(); }
-  else if (k === 's') { e.preventDefault(); notYet(); }
+  else if (k === 's') { e.preventDefault(); saveNow(); }
   else if (k === 'w') { e.preventDefault(); if (state.active) closeTab(state.active); }
   else if (k === 'f') { e.preventDefault(); openFind(); }
   else if (k === 'p') { e.preventDefault(); printDoc(); }
@@ -2620,7 +2744,13 @@ window.addEventListener('keydown', e => {
   }
 });
 
-window.addEventListener('beforeunload', () => { try { stash(); } catch (e) {} });
+window.addEventListener('beforeunload', (e) => {
+  try { stash(); flushAll(); } catch (err) {}
+  // 아직 서버로 못 올린 편집분이 있으면 창을 닫기 전에 한 번 잡는다.
+  if (saveTimers.size || savingNow.size || saveError || state.tabs.some(isDirty)) {
+    e.preventDefault(); e.returnValue = ''; return '';
+  }
+});
 
 /* ============================ 14. 시작 ================================= */
 let savedSession = null;
@@ -2639,10 +2769,6 @@ function boot() {
   $$('#sideSwitch button').forEach(b => b.classList.toggle('on', b.dataset.view === state.sidebarView));
   D.tree.hidden = state.sidebarView !== 'tree';
   D.toc.hidden  = state.sidebarView !== 'toc';
-
-  // 이 단계에서는 아직 쓰지 않는다. 편집을 막아 실수로 고치는 일을 없앤다.
-  D.editor.readOnly = true;
-  D.editor.placeholder = '읽기 전용 미리보기 단계입니다.';
 
   renderTabs(); renderPreview(); updateStatus(); renderTree();
 
