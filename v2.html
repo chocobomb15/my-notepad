@@ -2343,9 +2343,44 @@ async function createFile(folderId) {
   };
   state.files = [...state.files, f].sort(byOrder);
   if (!state.openFolders.includes(folderId)) state.openFolders.push(folderId);
+  // 탭으로 바로 열고 이름 입력 상태로 둔다 (구버전과 같은 동작).
+  const t = createTab({ name: f.name, path: folderPathOf(folderId), docId: f.id, content: '', saved: '' });
   state.renaming = { kind: 'file', id: f.id };
-  renderTree();
+  setActive(t.id);   // 탭·미리보기·트리·상태바를 함께 그린다
   try { await saveFileDoc(f); } catch (e) { toast('문서 만들기 실패: ' + (e.code || e.message)); }
+}
+
+/* --- 상단 바 "+ 새 문서" ------------------------------------------------
+   폴더 기반 앱이라 문서는 반드시 폴더 안에 있어야 한다. 지금 보고 있는
+   문서나 열려 있는 폴더가 있으면 그 자리에 만들고, 없으면 폴더를 고르게
+   한다. 폴더가 하나도 없으면 만들 곳이 없다는 뜻이라 안내만 한다. */
+function currentFolderContext() {
+  const t = activeTab();
+  if (t && t.docId) {
+    const f = state.files.find(x => x.id === t.docId);
+    if (f) return f.folderId;
+  }
+  if (state.openFolders.length) return state.openFolders[state.openFolders.length - 1];
+  return null;
+}
+
+async function newDocFlow() {
+  const fid = currentFolderContext();
+  if (fid) { await createFile(fid); return; }
+  if (!state.folders.length) { toast('먼저 폴더를 만들어 주세요. 문서는 폴더 안에만 둘 수 있습니다.'); return; }
+  openNewDocFolderPicker();
+}
+
+function openNewDocFolderPicker() {
+  const rows = [];
+  const walk = (pid, depth) => childFolders(pid).forEach(f => {
+    rows.push('<div class="pickrow" data-newdoc="' + f.id + '" style="padding-left:' + (10 + depth * 16) + 'px">' +
+      '<span class="dot" style="background:' + esc(f.color || '#8b949e') + '"></span>' +
+      '<span>' + esc(f.name) + '</span></div>');
+    walk(f.id, depth + 1);
+  });
+  walk(null, 0);
+  openSheet('새 문서를 만들 폴더 고르기', rows.join(''));
 }
 
 async function changeFolderColor(id, color) {
@@ -2516,6 +2551,8 @@ function openMovePicker() {
 $('#modalBody').addEventListener('click', e => {
   const p = e.target.closest('[data-target]');
   if (p) { moveSelection(p.dataset.target || null); return; }
+  const nd = e.target.closest('[data-newdoc]');
+  if (nd) { closeSheet(); createFile(nd.dataset.newdoc); return; }
   const r = e.target.closest('[data-restore]');
   if (r) { restoreBatch(r.dataset.restore); return; }
   const g = e.target.closest('[data-purge]');
@@ -2834,7 +2871,6 @@ function buildToolbar() {
 
 // 기존 버전의 F5 = 날짜·시간 삽입. 브라우저 새로고침을 가로채서 쓴다.
 function insertDateTime() {
-  if (D.editor.readOnly) { notYet(); return; }
   if (!activeTab()) return;
   const now = new Date();
   const stamp = now.toLocaleDateString('ko-KR') + ' ' + now.toLocaleTimeString('ko-KR');
@@ -3101,14 +3137,13 @@ $('#modalBody').addEventListener('click', e => {
 });
 
 /* ============================ 13. 이벤트 연결 ========================== */
-const notYet = () => toast('읽기 전용 단계입니다. 편집·저장은 다음 단계에서 붙습니다.');
 $('#btnSidebar').addEventListener('click', () => toggleSidebar());
 D.fontSel.addEventListener('change', () => setFont(D.fontSel.value));
 $('#btnZoomIn').addEventListener('click', () => setZoom(state.zoom + 0.1));
 $('#btnZoomOut').addEventListener('click', () => setZoom(state.zoom - 0.1));
 $('#zoomVal').addEventListener('click', () => setZoom(1));   // 눌러서 100% 로
-$('#btnNew').addEventListener('click', notYet);      // 새 문서 만들기는 3-4 에서
-$('#btnNewTab').addEventListener('click', notYet);
+$('#btnNew').addEventListener('click', newDocFlow);
+$('#btnNewTab').addEventListener('click', newDocFlow);
 $('#btnSave').addEventListener('click', () => saveNow());
 $('#btnFind').addEventListener('click', () => (D.findbar.classList.contains('on') ? closeFind() : openFind()));
 $('#btnToc').addEventListener('click', () => {
@@ -3285,7 +3320,7 @@ window.addEventListener('keydown', e => {
 
   const k = e.key.toLowerCase();
   if (k === 'o') { e.preventDefault(); toggleSidebar(true); }
-  else if (k === 'n') { e.preventDefault(); newDoc(); }
+  else if (k === 'n') { e.preventDefault(); newDocFlow(); }
   else if (k === 's') { e.preventDefault(); saveNow(); }
   else if (k === 'w') { e.preventDefault(); if (state.active) closeTab(state.active); }
   else if (k === 'f') { e.preventDefault(); openFind(); }
