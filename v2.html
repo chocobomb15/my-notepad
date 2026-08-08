@@ -560,12 +560,9 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
 
   <!-- 상단 바 -->
   <header class="titlebar">
+    <button class="btn icon" id="btnSidebar" title="탐색기 열기/닫기 (Ctrl+\)">◀</button>
     <div class="brand"><div class="logo">✎</div><span>NOTEPAD</span></div>
 
-    <button class="btn" id="btnOpen" title="파일 열기 (Ctrl+O)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-      <span class="lbl">열기</span>
-    </button>
     <button class="btn" id="btnNew" title="새 문서 (Ctrl+N)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
       <span class="lbl">새 문서</span>
@@ -1900,26 +1897,54 @@ function renderTree() {
   host.appendChild(frag);
 }
 
+/* --- 폴더 열고 닫기 -----------------------------------------------------
+   기존 버전의 동작을 그대로 옮긴다. 폴더를 누르면 그 폴더의 문서가 전부
+   탭으로 열리고, 다른 폴더의 탭과 펼침은 정리된다. 한 번에 한 폴더만
+   보는 방식이라 탭이 무한정 쌓이지 않는다. */
+function descendantFolderIds(id) {
+  const out = [id];
+  state.folders.filter(f => f.parentId === id).forEach(c => out.push(...descendantFolderIds(c.id)));
+  return out;
+}
+function ancestorIds(id) {
+  const out = [];
+  let cur = state.folders.find(f => f.id === id), guard = 0;
+  while (cur && cur.parentId && guard++ < 20) { out.push(cur.parentId); cur = state.folders.find(f => f.id === cur.parentId); }
+  return out;
+}
+
+function toggleFolder(id) {
+  if (state.openFolders.includes(id)) {
+    // 접기 — 자신과 하위 폴더를 접고, 그 안 문서의 탭도 닫는다
+    const ids = descendantFolderIds(id);
+    state.openFolders = state.openFolders.filter(x => !ids.includes(x));
+    const docIds = state.files.filter(f => ids.includes(f.folderId)).map(f => f.id);
+    state.tabs.slice().forEach(t => { if (docIds.includes(t.docId)) closeTab(t.id, true); });
+  } else {
+    // 펼치기 — 조상만 남기고 나머지 폴더는 접는다
+    state.openFolders = [...ancestorIds(id), id];
+    const docs = filesIn(id);
+    if (docs.length) {
+      // 이 폴더의 문서만 탭에 남긴다
+      state.tabs.slice().forEach(t => closeTab(t.id, true));
+      docs.forEach(f => openDoc(f.id));
+      const first = state.tabs.find(t => t.docId === docs[0].id);
+      if (first) setActive(first.id);
+    }
+  }
+  renderTree(); persist();
+}
+
 D.tree.addEventListener('click', e => {
   const fr = e.target.closest('[data-file]');
   if (fr) { openDoc(fr.dataset.file); return; }
   const fo = e.target.closest('[data-folder]');
-  if (!fo) return;
-  const id = fo.dataset.folder;
-  state.openFolders = state.openFolders.includes(id)
-    ? state.openFolders.filter(x => x !== id)
-    : [...state.openFolders, id];
-  renderTree(); persist();
+  if (fo) toggleFolder(fo.dataset.folder);
 });
 
 D.sideSw.addEventListener('click', e => {
   const b = e.target.closest('button');
-  if (!b) return;
-  state.sidebarView = b.dataset.view;
-  $$('#sideSwitch button').forEach(x => x.classList.toggle('on', x === b));
-  D.tree.hidden = state.sidebarView !== 'tree';
-  D.toc.hidden  = state.sidebarView !== 'toc';
-  persist();
+  if (b) setSidebarView(b.dataset.view);
 });
 
 /* --- 인증 --- */
@@ -2025,6 +2050,8 @@ function setWidth(w) {
 function toggleSidebar(force) {
   state.sidebar = force == null ? !state.sidebar : force;
   document.body.classList.toggle('no-sidebar', !state.sidebar);
+  const b = $('#btnSidebar');
+  if (b) { b.textContent = state.sidebar ? '◀' : '▶'; }
   persist();
 }
 
@@ -2118,6 +2145,16 @@ function buildToolbar() {
     frag.appendChild(b);
   }
   D.toolbar.appendChild(frag);
+}
+
+// 기존 버전의 F5 = 날짜·시간 삽입. 브라우저 새로고침을 가로채서 쓴다.
+function insertDateTime() {
+  if (D.editor.readOnly) { notYet(); return; }
+  if (!activeTab()) return;
+  const now = new Date();
+  const stamp = now.toLocaleDateString('ko-KR') + ' ' + now.toLocaleTimeString('ko-KR');
+  const s = D.editor.selectionStart, e = D.editor.selectionEnd;
+  replaceRange(s, e, stamp, s + stamp.length);
 }
 
 const scheduleRender = debounce(() => { renderPreview(); updateStatus(); }, 140);
@@ -2333,13 +2370,14 @@ function showHelp() {
     + row('Ctrl+P', '인쇄 / PDF 저장')
     + '</table><h4>보기</h4><table>'
     + row('Ctrl+1', '보기 모드') + row('Ctrl+2', '분할 모드') + row('Ctrl+3', '편집 모드')
-    + row('Ctrl+\\', '목차 켜기/끄기') + row('Ctrl+Shift+L', '테마 전환 (밝게 · 세피아 · 어둡게)')
+    + row('Ctrl+\\', '탐색기 열기/닫기') + row('Ctrl+Shift+L', '테마 전환 (밝게 · 세피아 · 어둡게)')
     + row('Ctrl++', '글자 크게') + row('Ctrl+-', '글자 작게') + row('Ctrl+0', '글자 크기 초기화')
     + row('Ctrl+Tab', '다음 탭') + row('Ctrl+Shift+Tab', '이전 탭')
     + '</table><h4>편집</h4><table>'
     + row('Ctrl+B', '굵게') + row('Ctrl+I', '기울임') + row('Ctrl+K', '링크')
     + row('Tab', '들여쓰기 (선택 영역)') + row('Shift+Tab', '내어쓰기')
     + row('Enter', '목록 · 인용문 자동 이어쓰기')
+    + row('F5', '날짜 · 시간 삽입')
     + '</table><h4>찾기</h4><table>'
     + row('Ctrl+F', '문서에서 찾기') + row('Enter', '다음 결과') + row('Shift+Enter', '이전 결과') + row('Esc', '닫기')
     + '</table>'
@@ -2376,12 +2414,24 @@ $('#modalBody').addEventListener('click', e => {
 
 /* ============================ 13. 이벤트 연결 ========================== */
 const notYet = () => toast('읽기 전용 단계입니다. 편집·저장은 다음 단계에서 붙습니다.');
-$('#btnOpen').addEventListener('click', () => { state.sidebarView = 'tree'; $$('#sideSwitch button').forEach(x => x.classList.toggle('on', x.dataset.view === 'tree')); D.tree.hidden = false; D.toc.hidden = true; toggleSidebar(true); });
+$('#btnSidebar').addEventListener('click', () => toggleSidebar());
 $('#btnNew').addEventListener('click', notYet);
 $('#btnNewTab').addEventListener('click', notYet);
 $('#btnSave').addEventListener('click', notYet);
 $('#btnFind').addEventListener('click', () => (D.findbar.classList.contains('on') ? closeFind() : openFind()));
-$('#btnToc').addEventListener('click', () => toggleSidebar());
+$('#btnToc').addEventListener('click', () => {
+  // 사이드바가 닫혀 있으면 열면서 목차로, 이미 목차를 보고 있으면 닫는다
+  if (state.sidebar && state.sidebarView === 'toc') { toggleSidebar(false); return; }
+  toggleSidebar(true);
+  setSidebarView('toc');
+});
+function setSidebarView(v) {
+  state.sidebarView = v;
+  $$('#sideSwitch button').forEach(x => x.classList.toggle('on', x.dataset.view === v));
+  D.tree.hidden = v !== 'tree';
+  D.toc.hidden  = v !== 'toc';
+  persist();
+}
 $('#btnTheme').addEventListener('click', () => setTheme(THEMES[(THEMES.indexOf(state.theme) + 1) % THEMES.length]));
 $('#btnMore').addEventListener('click', showMore);
 $('#modalClose').addEventListener('click', closeSheet);
@@ -2534,6 +2584,7 @@ window.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
 
   if (e.key === 'F1') { e.preventDefault(); showHelp(); return; }
+  if (e.key === 'F5' && !e.ctrlKey && !e.shiftKey) { e.preventDefault(); insertDateTime(); return; }
   if (e.key === 'Escape') {
     if ($('#modal').classList.contains('on')) { closeSheet(); return; }
     if (D.findbar.classList.contains('on')) { closeFind(); return; }
