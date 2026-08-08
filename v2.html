@@ -251,6 +251,56 @@ body.no-sidebar .sidebar{display:none}
 .tree .row .ct{flex:0 0 auto;font-size:10.5px;color:var(--fg-faint)}
 .tree .row.file .nm{font-size:12.5px}
 .tree-empty{padding:14px 12px;color:var(--fg-faint);font-size:12.5px;line-height:1.6}
+.tree .row.sel{background:var(--accent-soft);color:var(--accent)}
+.tree .row.sel.on{box-shadow:inset 2px 0 0 var(--accent)}
+.tree .row input.rename{
+  flex:1;min-width:0;background:var(--bg-elev);color:var(--fg);
+  border:1px solid var(--accent);border-radius:4px;outline:0;
+  font-family:inherit;font-size:12.5px;padding:1px 5px;
+}
+.tree-head{
+  display:flex;align-items:center;gap:4px;padding:2px 6px 6px;
+  border-bottom:1px solid var(--border-soft);margin-bottom:4px;
+}
+.tree-head button{
+  height:24px;padding:0 8px;border:1px solid var(--border);border-radius:6px;
+  background:var(--bg-elev);color:var(--fg-dim);cursor:pointer;font-size:11.5px;font-family:inherit;
+}
+.tree-head button:hover{background:var(--bg-hover);color:var(--fg)}
+.tree-head .selinfo{flex:1;font-size:11px;color:var(--accent);font-weight:600;text-align:right}
+
+/* --- 우클릭 메뉴 --- */
+#ctxmenu{
+  position:fixed;z-index:1500;min-width:172px;padding:4px;
+  background:var(--bg-elev);border:1px solid var(--border);border-radius:9px;
+  box-shadow:var(--shadow);font-size:12.5px;
+}
+#ctxmenu[hidden]{display:none}
+#ctxmenu .mi{
+  display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--fg);
+}
+#ctxmenu .mi:hover{background:var(--bg-hover)}
+#ctxmenu .mi.danger{color:var(--danger)}
+#ctxmenu .sep{height:1px;background:var(--border-soft);margin:4px 2px}
+#ctxmenu .lbl{padding:6px 10px 3px;font-size:10.5px;color:var(--fg-faint);font-weight:700;letter-spacing:.04em}
+#ctxmenu .colors{display:flex;flex-wrap:wrap;gap:6px;padding:4px 10px 8px}
+#ctxmenu .colors i{width:17px;height:17px;border-radius:50%;cursor:pointer;border:2px solid transparent}
+#ctxmenu .colors i.on{border-color:var(--fg)}
+
+/* --- 폴더 고르기 (이동) --- */
+.pickrow{
+  display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:7px;cursor:pointer;
+}
+.pickrow:hover{background:var(--bg-hover)}
+.pickrow .dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.trashrow{
+  display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border-soft);
+}
+.trashrow .meta{flex:1;min-width:0}
+.trashrow .meta b{display:block;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trashrow .meta span{font-size:11px;color:var(--fg-dim)}
+.trashrow button{height:26px;padding:0 10px;font-size:11.5px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elev);color:var(--fg);cursor:pointer}
+.trashrow button.danger{color:var(--danger);border-color:var(--danger)}
 
 /* --- 비밀번호 게이트 --- */
 #gate{
@@ -359,6 +409,22 @@ html[data-theme="sepia"]{--ok-soft:#e3ecd4;--warn-soft:#f6e9c4;--danger-soft:#f3
   font-family:inherit;font-size:12.5px;cursor:pointer;outline:0;
 }
 .fontsel:focus{border-color:var(--accent)}
+
+/* --- 확대 조절 (구버전 상단 바에 있던 － % ＋) --- */
+.zoombox{
+  display:flex;align-items:center;flex:0 0 auto;
+  background:var(--bg-sunken);border:1px solid var(--border);border-radius:7px;overflow:hidden;
+}
+.zoombox button{
+  width:26px;height:26px;border:0;background:transparent;cursor:pointer;
+  color:var(--fg-dim);font-size:13px;line-height:1;display:grid;place-items:center;
+}
+.zoombox button:hover{background:var(--bg-hover);color:var(--fg)}
+.zoombox span{
+  min-width:42px;text-align:center;font-size:11.5px;color:var(--fg-dim);
+  border-left:1px solid var(--border);border-right:1px solid var(--border);
+  line-height:26px;cursor:default;user-select:none;
+}
 
 /* ============================================================
    빈 화면 / 드롭 오버레이
@@ -611,6 +677,12 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
 
     <select id="fontSel" class="fontsel" title="본문 글꼴"></select>
 
+    <div class="zoombox">
+      <button id="btnZoomOut" title="글자 작게 (Ctrl -)">－</button>
+      <span id="zoomVal">100%</span>
+      <button id="btnZoomIn" title="글자 크게 (Ctrl +)">＋</button>
+    </div>
+
     <button class="btn icon" id="btnFind" title="문서 내 찾기 (Ctrl+F)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     </button>
@@ -687,6 +759,8 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
     <span class="chip" id="statZoom"></span>
   </footer>
 </div>
+
+<div id="ctxmenu" hidden></div>
 
 <div id="gate">
   <div class="gate-box">
@@ -1433,8 +1507,16 @@ const state = {
   folders: [], files: [],              // Firestore 원본 (본문 포함)
   trashFolders: [], trashFiles: [],
   openFolders: [],                     // 펼쳐 둔 폴더 id
+  selected: [],                        // 'file:id' / 'folder:id' — 다중 선택
+  anchor: null,                        // Shift 범위 선택 기준점
+  renaming: null,                      // {kind,id}
   authed: false, loading: false, syncError: null,
 };
+
+const COLORS = ['#60a5fa','#34d399','#f87171','#fbbf24','#a78bfa','#fb923c','#38bdf8','#e879f9','#94a3b8','#f472b6','#4ade80','#fb7185'];
+const newId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+const selKey = (kind, id) => kind + ':' + id;
+const isSel  = (kind, id) => state.selected.includes(selKey(kind, id));
 
 const D = {
   tabbar:   $('#tabbar'),   editor:   $('#editor'),   preview:  $('#preview'),
@@ -1503,6 +1585,7 @@ function setActive(id) {
   }
   renderTabs();
   renderPreview();
+  renderTree();      // 탐색기의 현재 문서 표시도 같이 옮긴다
   if (t) {
     D.pvPane.scrollTop = t.pvScroll || 0;
     D.editor.scrollTop = t.edScroll || 0;
@@ -2025,24 +2108,59 @@ function filesIn(fid) {
   return state.files.filter(f => f.folderId === fid).sort(byOrder);
 }
 
+let treeOrder = [];   // 화면에 보이는 순서 — Shift 범위 선택에 쓴다
+
 function renderTree() {
   const host = D.tree;
+  treeOrder = [];
   if (state.loading) { host.innerHTML = '<div class="tree-empty">문서를 불러오는 중…</div>'; return; }
   if (state.syncError) {
     host.innerHTML = '<div class="tree-empty">불러오지 못했습니다.<br>' + esc(state.syncError) + '</div>';
     return;
   }
+
+  const frag = document.createDocumentFragment();
+
+  // 머리줄 — 새 폴더, 휴지통, 선택 개수
+  const head = document.createElement('div');
+  head.className = 'tree-head';
+  const trashCount = state.trashFiles.length;
+  head.innerHTML =
+    '<button data-act="newroot" title="최상위 폴더 만들기">＋ 폴더</button>' +
+    '<button data-act="trash" title="휴지통">🗑' + (trashCount ? ' ' + trashCount : '') + '</button>' +
+    '<span class="selinfo">' + (state.selected.length > 1 ? state.selected.length + '개 선택' : '') + '</span>';
+  frag.appendChild(head);
+
   if (!state.folders.length && !state.files.length) {
-    host.innerHTML = '<div class="tree-empty">문서가 없습니다.</div>';
+    const e = document.createElement('div');
+    e.className = 'tree-empty';
+    e.textContent = '문서가 없습니다.';
+    frag.appendChild(e);
+    host.innerHTML = ''; host.appendChild(frag);
     return;
   }
-  const frag = document.createDocumentFragment();
 
   const row = (depth, cls) => {
     const d = document.createElement('div');
     d.className = 'row ' + cls;
     d.style.paddingLeft = (6 + depth * 13) + 'px';
     return d;
+  };
+  const nameCell = (r, kind, item) => {
+    if (state.renaming && state.renaming.kind === kind && state.renaming.id === item.id) {
+      const inp = document.createElement('input');
+      inp.className = 'rename';
+      inp.value = item.name;
+      inp.dataset.renameKind = kind;
+      inp.dataset.renameId = item.id;
+      r.appendChild(inp);
+      setTimeout(() => { inp.focus(); inp.select(); }, 0);
+    } else {
+      const nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = item.name;
+      r.appendChild(nm);
+    }
   };
 
   function walkFolder(folder, depth) {
@@ -2052,13 +2170,16 @@ function renderTree() {
 
     const r = row(depth, 'folder');
     r.dataset.folder = folder.id;
+    if (isSel('folder', folder.id)) r.classList.add('sel');
     r.innerHTML =
       '<span class="tw">' + (subs.length || kids.length ? (open ? '▾' : '▸') : '') + '</span>' +
-      '<span class="ic">📁<span class="dot" style="background:' + esc(folder.color || '#8b949e') + '"></span></span>' +
-      '<span class="nm"></span>' +
-      '<span class="ct">' + (kids.length || '') + '</span>';
-    r.querySelector('.nm').textContent = folder.name;
+      '<span class="ic">📁<span class="dot" style="background:' + esc(folder.color || '#8b949e') + '"></span></span>';
+    nameCell(r, 'folder', folder);
+    const ct = document.createElement('span');
+    ct.className = 'ct'; ct.textContent = kids.length || '';
+    r.appendChild(ct);
     frag.appendChild(r);
+    treeOrder.push(selKey('folder', folder.id));
 
     if (!open) return;
     subs.forEach(s => walkFolder(s, depth + 1));
@@ -2066,9 +2187,11 @@ function renderTree() {
       const fr = row(depth + 1, 'file');
       fr.dataset.file = f.id;
       if (state.tabs.some(t => t.docId === f.id && t.id === state.active)) fr.classList.add('on');
-      fr.innerHTML = '<span class="tw"></span><span class="ic">📄</span><span class="nm"></span>';
-      fr.querySelector('.nm').textContent = f.name;
+      if (isSel('file', f.id)) fr.classList.add('sel');
+      fr.innerHTML = '<span class="tw"></span><span class="ic">📄</span>';
+      nameCell(fr, 'file', f);
       frag.appendChild(fr);
+      treeOrder.push(selKey('file', f.id));
     });
   }
 
@@ -2115,17 +2238,393 @@ function toggleFolder(id) {
   renderTree(); persist();
 }
 
+/* --- 선택 --------------------------------------------------------------
+   Ctrl 로 하나씩 더하고 Shift 로 범위를 잡는다. 여러 개를 골라 한꺼번에
+   옮기거나 지우기 위한 것이다. */
+function pickRow(kind, id, e) {
+  const key = selKey(kind, id);
+  if (e.shiftKey && state.anchor) {
+    const a = treeOrder.indexOf(state.anchor), b = treeOrder.indexOf(key);
+    if (a >= 0 && b >= 0) {
+      state.selected = treeOrder.slice(Math.min(a, b), Math.max(a, b) + 1);
+      return true;
+    }
+  }
+  if (e.ctrlKey || e.metaKey) {
+    state.selected = state.selected.includes(key)
+      ? state.selected.filter(k => k !== key)
+      : [...state.selected, key];
+    state.anchor = key;
+    return true;
+  }
+  state.selected = [key];
+  state.anchor = key;
+  return false;   // 단순 클릭 — 열기/펼치기까지 진행
+}
+
 D.tree.addEventListener('click', e => {
+  if (e.target.closest('input.rename')) return;
+
+  const act = e.target.closest('.tree-head button');
+  if (act) {
+    if (act.dataset.act === 'newroot') createFolder(null);
+    else if (act.dataset.act === 'trash') openTrash();
+    return;
+  }
+
   const fr = e.target.closest('[data-file]');
-  if (fr) { openDoc(fr.dataset.file); return; }
+  if (fr) {
+    const multi = pickRow('file', fr.dataset.file, e);
+    if (multi) { renderTree(); return; }
+    openDoc(fr.dataset.file);
+    renderTree();
+    return;
+  }
   const fo = e.target.closest('[data-folder]');
-  if (fo) toggleFolder(fo.dataset.folder);
+  if (fo) {
+    const multi = pickRow('folder', fo.dataset.folder, e);
+    if (multi) { renderTree(); return; }
+    toggleFolder(fo.dataset.folder);
+  }
 });
+
+// 이름 바꾸기 입력
+D.tree.addEventListener('keydown', e => {
+  const inp = e.target.closest('input.rename');
+  if (!inp) return;
+  if (e.key === 'Enter') { e.preventDefault(); commitRename(inp.dataset.renameKind, inp.dataset.renameId, inp.value); }
+  if (e.key === 'Escape') { e.preventDefault(); state.renaming = null; renderTree(); }
+});
+D.tree.addEventListener('blur', e => {
+  const inp = e.target.closest && e.target.closest('input.rename');
+  if (inp) commitRename(inp.dataset.renameKind, inp.dataset.renameId, inp.value);
+}, true);
+
+/* --- 트리 조작 --------------------------------------------------------- */
+async function commitRename(kind, id, value) {
+  state.renaming = null;
+  const name = String(value || '').trim();
+  const list = kind === 'file' ? state.files : state.folders;
+  const item = list.find(x => x.id === id);
+  if (!item || !name || name === item.name) { renderTree(); return; }
+  const next = { ...item, name };
+  if (kind === 'file') {
+    state.files = state.files.map(f => f.id === id ? next : f);
+    state.tabs.forEach(t => { if (t.docId === id) t.name = name; });
+    renderTabs();
+  } else {
+    state.folders = state.folders.map(f => f.id === id ? next : f);
+  }
+  renderTree(); updateStatus();
+  try { kind === 'file' ? await saveFileDoc(next) : await saveFolderDoc(next); }
+  catch (err) { toast('이름 바꾸기 실패: ' + (err.code || err.message)); }
+}
+
+async function createFolder(parentId) {
+  const sibs = childFolders(parentId);
+  const maxO = sibs.reduce((m, f) => Math.max(m, f.order ?? 0), -1);
+  const f = {
+    id: newId(), name: '새 폴더', parentId: parentId || null,
+    color: COLORS[state.folders.length % COLORS.length],
+    createdAt: Date.now(), order: maxO + 1, deletedAt: null,
+  };
+  state.folders = [...state.folders, f].sort(byOrder);
+  if (parentId && !state.openFolders.includes(parentId)) state.openFolders.push(parentId);
+  state.renaming = { kind: 'folder', id: f.id };
+  renderTree();
+  try { await saveFolderDoc(f); } catch (e) { toast('폴더 만들기 실패: ' + (e.code || e.message)); }
+}
+
+async function createFile(folderId) {
+  const maxO = filesIn(folderId).reduce((m, f) => Math.max(m, f.order ?? 0), -1);
+  const f = {
+    id: newId(), folderId, name: '새 문서', md: '', format: 'md', schema: 2,
+    createdAt: Date.now(), order: maxO + 1, updatedAt: Date.now(), deletedAt: null,
+  };
+  state.files = [...state.files, f].sort(byOrder);
+  if (!state.openFolders.includes(folderId)) state.openFolders.push(folderId);
+  state.renaming = { kind: 'file', id: f.id };
+  renderTree();
+  try { await saveFileDoc(f); } catch (e) { toast('문서 만들기 실패: ' + (e.code || e.message)); }
+}
+
+async function changeFolderColor(id, color) {
+  const f = state.folders.find(x => x.id === id);
+  if (!f) return;
+  const next = { ...f, color };
+  state.folders = state.folders.map(x => x.id === id ? next : x);
+  renderTree();
+  try { await saveFolderDoc(next); } catch (e) { toast('색 바꾸기 실패: ' + (e.code || e.message)); }
+}
+
+/* 선택한 것들을 한 폴더로 옮긴다. 자기 자신이나 자기 하위로는 못 옮긴다. */
+async function moveSelection(targetId) {
+  const sel = state.selected.map(k => k.split(':'));
+  const movingFolders = sel.filter(([k]) => k === 'folder').map(([, id]) => id);
+  const blocked = new Set(movingFolders.flatMap(descendantFolderIds));
+  if (targetId && blocked.has(targetId)) { toast('폴더를 자기 자신 안으로는 옮길 수 없습니다.'); return; }
+
+  const jobs = [];
+  for (const [kind, id] of sel) {
+    if (kind === 'folder') {
+      const f = state.folders.find(x => x.id === id);
+      if (!f || (f.parentId || null) === (targetId || null)) continue;
+      const maxO = childFolders(targetId).reduce((m, x) => Math.max(m, x.order ?? 0), -1);
+      const next = { ...f, parentId: targetId || null, order: maxO + 1 };
+      state.folders = state.folders.map(x => x.id === id ? next : x);
+      jobs.push(saveFolderDoc(next));
+    } else {
+      if (!targetId) continue;   // 문서는 최상위에 둘 수 없다
+      const f = state.files.find(x => x.id === id);
+      if (!f || f.folderId === targetId) continue;
+      const maxO = filesIn(targetId).reduce((m, x) => Math.max(m, x.order ?? 0), -1);
+      const next = { ...f, folderId: targetId, order: maxO + 1 };
+      state.files = state.files.map(x => x.id === id ? next : x);
+      state.tabs.forEach(t => { if (t.docId === id) t.path = folderPathOf(targetId); });
+      jobs.push(saveFileDoc(next));
+    }
+  }
+  state.selected = [];
+  if (targetId && !state.openFolders.includes(targetId)) state.openFolders.push(targetId);
+  renderTree(); updateStatus(); closeSheet();
+  try { await Promise.all(jobs); toast(jobs.length + '개를 옮겼습니다'); }
+  catch (e) { toast('이동 실패: ' + (e.code || e.message)); }
+}
+
+/* 삭제는 휴지통으로만 보낸다. 실제 삭제는 휴지통에서 따로 한다. */
+async function deleteSelection() {
+  const sel = state.selected.map(k => k.split(':'));
+  const batch = newId(), now = Date.now();
+  const folderIds = [...new Set(sel.filter(([k]) => k === 'folder').flatMap(([, id]) => descendantFolderIds(id)))];
+  const fileIds = [...new Set([
+    ...sel.filter(([k]) => k === 'file').map(([, id]) => id),
+    ...state.files.filter(f => folderIds.includes(f.folderId)).map(f => f.id),
+  ])];
+
+  // 지우기 전에 대기 중인 저장을 정리한다. 안 그러면 지운 문서가 되살아난다.
+  state.tabs.slice().forEach(t => { if (fileIds.includes(t.docId)) { saveTimers.delete(t.id); closeTab(t.id, true); } });
+
+  const goneFolders = state.folders.filter(f => folderIds.includes(f.id));
+  const goneFiles   = state.files.filter(f => fileIds.includes(f.id));
+  state.trashFolders = [...goneFolders.map(f => ({ ...f, deletedAt: now, deletedBatch: batch })), ...state.trashFolders];
+  state.trashFiles   = [...goneFiles.map(f => ({ ...f, deletedAt: now, deletedBatch: batch })), ...state.trashFiles];
+  state.folders = state.folders.filter(f => !folderIds.includes(f.id));
+  state.files   = state.files.filter(f => !fileIds.includes(f.id));
+  state.selected = [];
+  renderTree();
+
+  const mark = { deletedAt: now, deletedBatch: batch, updatedAt: now };
+  try {
+    await Promise.all([
+      ...fileIds.map(id => { noteWrite(id, now); return setDoc(doc(filesCol(), id), mark, { merge: true }); }),
+      ...folderIds.map(id => { noteWrite(id, now); return setDoc(doc(foldersCol(), id), mark, { merge: true }); }),
+    ]);
+    toast('휴지통으로 보냈습니다 · 문서 ' + fileIds.length + '개');
+  } catch (e) { toast('삭제 실패: ' + (e.code || e.message)); }
+}
 
 D.sideSw.addEventListener('click', e => {
   const b = e.target.closest('button');
   if (b) setSidebarView(b.dataset.view);
 });
+
+/* --- 우클릭 메뉴 --------------------------------------------------------- */
+const CM = $('#ctxmenu');
+function closeCtx() { CM.hidden = true; }
+
+D.tree.addEventListener('contextmenu', e => {
+  const fr = e.target.closest('[data-file]');
+  const fo = e.target.closest('[data-folder]');
+  if (!fr && !fo) return;
+  e.preventDefault();
+
+  const kind = fr ? 'file' : 'folder';
+  const id   = fr ? fr.dataset.file : fo.dataset.folder;
+  // 선택 밖을 눌렀으면 그것만 선택한다. 안이면 선택 전체가 대상이다.
+  if (!isSel(kind, id)) { state.selected = [selKey(kind, id)]; state.anchor = selKey(kind, id); renderTree(); }
+
+  const sel = state.selected.map(k => k.split(':'));
+  const many = sel.length > 1;
+  const folder = kind === 'folder' ? state.folders.find(f => f.id === id) : null;
+  const nFiles = sel.filter(([k]) => k === 'file').length;
+  const nFolders = sel.filter(([k]) => k === 'folder').length;
+
+  const parts = [];
+  if (many) parts.push('<div class="lbl">' + (nFolders ? '폴더 ' + nFolders + '개 ' : '') + (nFiles ? '문서 ' + nFiles + '개' : '') + '</div>');
+  if (!many) parts.push('<div class="mi" data-a="rename">✎ 이름 바꾸기</div>');
+  if (!many && kind === 'folder') {
+    parts.push('<div class="mi" data-a="newfile">📄 새 문서</div>');
+    parts.push('<div class="mi" data-a="newsub">📁 새 하위폴더</div>');
+  }
+  parts.push('<div class="sep"></div>');
+  parts.push('<div class="mi" data-a="move">📂 다른 폴더로 이동…</div>');
+  parts.push('<div class="mi danger" data-a="del">🗑 휴지통으로</div>');
+  if (!many && folder) {
+    parts.push('<div class="sep"></div><div class="lbl">폴더 색</div><div class="colors">' +
+      COLORS.map(c => '<i data-color="' + c + '" style="background:' + c + '"' +
+        (folder.color === c ? ' class="on"' : '') + '></i>').join('') + '</div>');
+  }
+  CM.innerHTML = parts.join('');
+  CM.dataset.kind = kind; CM.dataset.id = id;
+  CM.hidden = false;
+  // 화면 밖으로 나가지 않게 위치를 잡는다
+  const r = CM.getBoundingClientRect();
+  CM.style.left = Math.min(e.clientX, innerWidth  - r.width  - 8) + 'px';
+  CM.style.top  = Math.min(e.clientY, innerHeight - r.height - 8) + 'px';
+});
+
+CM.addEventListener('click', e => {
+  const col = e.target.closest('[data-color]');
+  if (col) { changeFolderColor(CM.dataset.id, col.dataset.color); closeCtx(); return; }
+  const mi = e.target.closest('.mi');
+  if (!mi) return;
+  const a = mi.dataset.a, kind = CM.dataset.kind, id = CM.dataset.id;
+  closeCtx();
+  if (a === 'rename')  { state.renaming = { kind, id }; renderTree(); }
+  else if (a === 'newfile') createFile(id);
+  else if (a === 'newsub')  createFolder(id);
+  else if (a === 'move')    openMovePicker();
+  else if (a === 'del')     confirmDelete();
+});
+document.addEventListener('click', e => { if (!e.target.closest('#ctxmenu')) closeCtx(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCtx(); });
+
+/* --- 이동 대상 고르기 --- */
+function openMovePicker() {
+  const moving = state.selected.map(k => k.split(':'));
+  const blocked = new Set(moving.filter(([k]) => k === 'folder').flatMap(([, id]) => descendantFolderIds(id)));
+  const hasFiles = moving.some(([k]) => k === 'file');
+
+  const rows = [];
+  const walk = (pid, depth) => childFolders(pid).forEach(f => {
+    if (!blocked.has(f.id)) {
+      rows.push('<div class="pickrow" data-target="' + f.id + '" style="padding-left:' + (10 + depth * 16) + 'px">' +
+        '<span class="dot" style="background:' + esc(f.color || '#8b949e') + '"></span>' +
+        '<span>' + esc(f.name) + '</span></div>');
+    }
+    walk(f.id, depth + 1);
+  });
+  walk(null, 0);
+
+  openSheet('이동할 위치 고르기',
+    '<p style="margin:0 0 10px;color:var(--fg-dim);font-size:12.5px">' +
+      state.selected.length + '개를 옮깁니다.' +
+      (hasFiles ? ' 문서는 폴더 안에만 둘 수 있습니다.' : '') + '</p>' +
+    (hasFiles ? '' : '<div class="pickrow" data-target=""><span>🏠</span><span>최상위</span></div>') +
+    (rows.length ? rows.join('') : '<p style="color:var(--fg-faint)">옮길 수 있는 폴더가 없습니다.</p>'));
+}
+$('#modalBody').addEventListener('click', e => {
+  const p = e.target.closest('[data-target]');
+  if (p) { moveSelection(p.dataset.target || null); return; }
+  const r = e.target.closest('[data-restore]');
+  if (r) { restoreBatch(r.dataset.restore); return; }
+  const g = e.target.closest('[data-purge]');
+  if (g) {
+    const b = g.dataset.purge;
+    const e2 = trashBatches().find(x => x.batch === b);
+    openSheet('영구 삭제',
+      '<p style="margin:0 0 8px">문서 <b>' + (e2 ? e2.files.length : 0) + '</b>개를 <b>완전히</b> 지웁니다.</p>' +
+      '<p style="margin:0 0 16px;color:var(--danger);font-size:12.5px">되돌릴 수 없습니다.</p>' +
+      '<button class="btn" data-confirmpurge="' + b + '" style="width:100%;justify-content:center;height:36px;' +
+      'background:var(--danger);border-color:var(--danger);color:#fff">영구 삭제</button>');
+    return;
+  }
+  const cp = e.target.closest('[data-confirmpurge]');
+  if (cp) purgeBatch(cp.dataset.confirmpurge);
+});
+
+function confirmDelete() {
+  const sel = state.selected.map(k => k.split(':'));
+  const folderIds = [...new Set(sel.filter(([k]) => k === 'folder').flatMap(([, id]) => descendantFolderIds(id)))];
+  const fileIds = [...new Set([
+    ...sel.filter(([k]) => k === 'file').map(([, id]) => id),
+    ...state.files.filter(f => folderIds.includes(f.folderId)).map(f => f.id),
+  ])];
+  const chars = state.files.filter(f => fileIds.includes(f.id))
+    .reduce((n, f) => n + docToMd(f).length, 0);
+  openSheet('휴지통으로 보내기',
+    '<p style="margin:0 0 8px">폴더 <b>' + folderIds.length + '</b>개 · 문서 <b>' + fileIds.length + '</b>개' +
+    (chars ? ' · 본문 ' + chars.toLocaleString() + '자' : '') + '</p>' +
+    '<p style="margin:0 0 16px;color:var(--fg-dim);font-size:12.5px">휴지통에서 되돌릴 수 있습니다.</p>' +
+    '<button class="btn primary" data-act="doDelete" style="width:100%;justify-content:center;height:36px">휴지통으로</button>');
+}
+
+/* --- 휴지통 --- */
+function trashBatches() {
+  const map = new Map();
+  const push = (item, kind) => {
+    const b = item.deletedBatch || ('_' + item.id);
+    if (!map.has(b)) map.set(b, { batch: b, at: item.deletedAt, folders: [], files: [] });
+    const e = map.get(b);
+    e[kind].push(item);
+    if (item.deletedAt > e.at) e.at = item.deletedAt;
+  };
+  state.trashFolders.forEach(f => push(f, 'folders'));
+  state.trashFiles.forEach(f => push(f, 'files'));
+  return [...map.values()].sort((a, b) => b.at - a.at);
+}
+
+function openTrash() {
+  const bs = trashBatches();
+  const fmt = ts => { const d = new Date(ts); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  openSheet('휴지통', bs.length ? bs.map(e => {
+    const label = e.folders.length
+      ? '📁 ' + esc(e.folders[0].name) + (e.folders.length > 1 ? ' 외 폴더 ' + (e.folders.length - 1) + '개' : '')
+      : '📄 ' + esc((e.files[0] || {}).name || '(이름 없음)') + (e.files.length > 1 ? ' 외 ' + (e.files.length - 1) + '개' : '');
+    return '<div class="trashrow"><div class="meta"><b>' + label + '</b>' +
+      '<span>' + fmt(e.at) + ' 삭제 · 문서 ' + e.files.length + '개</span></div>' +
+      '<button data-restore="' + e.batch + '">복원</button>' +
+      '<button class="danger" data-purge="' + e.batch + '">영구 삭제</button></div>';
+  }).join('') : '<p style="color:var(--fg-faint);text-align:center;padding:24px 0">휴지통이 비어 있습니다.</p>');
+}
+
+async function restoreBatch(batch) {
+  const e = trashBatches().find(x => x.batch === batch);
+  if (!e) return;
+  const alive = new Set([...state.folders.map(f => f.id), ...e.folders.map(f => f.id)]);
+  const folders = e.folders.map(f => ({ ...f, deletedAt: null, deletedBatch: null,
+    parentId: (f.parentId && alive.has(f.parentId)) ? f.parentId : null }));
+
+  // 문서가 있던 폴더가 사라졌으면 갈 곳이 없다. 화면에 안 보이면 잃은 것과
+  // 같으므로 그럴 때만 복구용 폴더를 만든다.
+  let rescue = null;
+  if (e.files.some(f => !alive.has(f.folderId))) {
+    rescue = state.folders.find(f => f.name === '복구된 문서' && !f.parentId);
+    if (!rescue) {
+      const maxO = childFolders(null).reduce((m, f) => Math.max(m, f.order ?? 0), -1);
+      rescue = { id: newId(), name: '복구된 문서', parentId: null, color: COLORS[2],
+                 createdAt: Date.now(), order: maxO + 1, deletedAt: null };
+      folders.push(rescue);
+    }
+  }
+  const files = e.files.map(f => ({ ...f, deletedAt: null, deletedBatch: null,
+    folderId: alive.has(f.folderId) ? f.folderId : rescue.id }));
+
+  state.folders = [...state.folders, ...folders].sort(byOrder);
+  state.files   = [...state.files, ...files].sort(byOrder);
+  state.trashFolders = state.trashFolders.filter(f => f.deletedBatch !== batch);
+  state.trashFiles   = state.trashFiles.filter(f => f.deletedBatch !== batch);
+  renderTree(); closeSheet();
+  try {
+    await Promise.all([...folders.map(saveFolderDoc), ...files.map(saveFileDoc)]);
+    toast('복원했습니다 · 문서 ' + files.length + '개');
+  } catch (err) { toast('복원 실패: ' + (err.code || err.message)); }
+}
+
+async function purgeBatch(batch) {
+  const e = trashBatches().find(x => x.batch === batch);
+  if (!e) return;
+  state.trashFolders = state.trashFolders.filter(f => f.deletedBatch !== batch);
+  state.trashFiles   = state.trashFiles.filter(f => f.deletedBatch !== batch);
+  renderTree(); closeSheet();
+  try {
+    await Promise.all([
+      ...e.files.map(f => deleteDoc(doc(filesCol(), f.id))),
+      ...e.folders.map(f => deleteDoc(doc(foldersCol(), f.id))),
+    ]);
+    toast('영구 삭제했습니다');
+  } catch (err) { toast('삭제 실패: ' + (err.code || err.message)); }
+}
 
 /* --- 인증 --- */
 function enterApp() {
@@ -2224,6 +2723,8 @@ function setTheme(th) {
 function setZoom(z) {
   state.zoom = Math.min(2.2, Math.max(0.7, Math.round(z * 20) / 20));
   document.documentElement.style.setProperty('--zoom', state.zoom);
+  const zv = $('#zoomVal');
+  if (zv) zv.textContent = Math.round(state.zoom * 100) + '%';
   updateStatus(); persist();
 }
 function setWidth(w) {
@@ -2580,6 +3081,7 @@ $('#modalBody').addEventListener('click', e => {
   if (!b) return;
   const act = b.dataset.act;
   closeSheet();
+  if (act === 'doDelete') { deleteSelection(); return; }
   if (act === 'export') exportHtml();
   else if (act === 'print') printDoc();
   else if (act === 'copyMd') {
@@ -2602,6 +3104,9 @@ $('#modalBody').addEventListener('click', e => {
 const notYet = () => toast('읽기 전용 단계입니다. 편집·저장은 다음 단계에서 붙습니다.');
 $('#btnSidebar').addEventListener('click', () => toggleSidebar());
 D.fontSel.addEventListener('change', () => setFont(D.fontSel.value));
+$('#btnZoomIn').addEventListener('click', () => setZoom(state.zoom + 0.1));
+$('#btnZoomOut').addEventListener('click', () => setZoom(state.zoom - 0.1));
+$('#zoomVal').addEventListener('click', () => setZoom(1));   // 눌러서 100% 로
 $('#btnNew').addEventListener('click', notYet);      // 새 문서 만들기는 3-4 에서
 $('#btnNewTab').addEventListener('click', notYet);
 $('#btnSave').addEventListener('click', () => saveNow());
