@@ -255,6 +255,15 @@ body.no-sidebar .sidebar{display:none}
 }
 .tree .row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .tree .row .ct{flex:0 0 auto;font-size:10.5px;color:var(--fg-faint)}
+.tree .row .addbtn{
+  flex:0 0 auto;width:18px;height:18px;line-height:1;
+  border:1px solid var(--border);border-radius:5px;
+  background:var(--bg-elev);color:var(--fg-dim);
+  cursor:pointer;font-family:inherit;font-size:12px;
+  display:none;place-items:center;padding:0;
+}
+.tree .row:hover .addbtn{display:grid}
+.tree .row .addbtn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
 .tree .row.file .nm{font-size:12.5px}
 .tree-empty{padding:14px 12px;color:var(--fg-faint);font-size:12.5px;line-height:1.6}
 .tree .row.sel{background:var(--accent-soft);color:var(--accent)}
@@ -341,11 +350,11 @@ body.no-sidebar .sidebar{display:none}
 .editor-pane{flex:1 1 50%;background:var(--bg-elev);border-right:1px solid var(--border)}
 .preview-pane{flex:1 1 50%;background:var(--bg-elev);overflow:auto;display:block}
 
-body[data-mode="view"] .editor-pane,
-body[data-mode="view"] .splitter{display:none}
+/* 분할 모드는 없앴다. 한 번에 한 쪽만 전체 너비로 쓴다. */
+.splitter{display:none !important}
+body[data-mode="view"] .editor-pane{display:none}
 body[data-mode="view"] .preview-pane{flex:1 1 100%}
-body[data-mode="edit"] .preview-pane,
-body[data-mode="edit"] .splitter{display:none}
+body[data-mode="edit"] .preview-pane{display:none}
 body[data-mode="edit"] .editor-pane{flex:1 1 100%;border-right:0}
 
 .splitter{
@@ -651,7 +660,7 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
 }
 </style>
 </head>
-<body data-mode="split" class="empty-state">
+<body data-mode="edit" class="empty-state">
 
 <div id="app">
 
@@ -677,9 +686,8 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
     <div class="tb-sep"></div>
 
     <div class="segmented" id="modeSwitch">
-      <button data-mode="view" title="보기 모드 (Ctrl+1)">👁 보기</button>
-      <button data-mode="split" title="분할 모드 (Ctrl+2)">◫ 분할</button>
-      <button data-mode="edit" title="편집 모드 (Ctrl+3)">✎ 편집</button>
+      <button data-mode="edit" title="편집 (Ctrl+1)">✎ 편집</button>
+      <button data-mode="view" title="미리보기 (Ctrl+2)">👁 미리보기</button>
     </div>
 
     <div class="tb-spacer"></div>
@@ -2228,6 +2236,12 @@ function renderTree() {
     const ct = document.createElement('span');
     ct.className = 'ct'; ct.textContent = kids.length || '';
     r.appendChild(ct);
+    // 폴더마다 새 문서 버튼 (구버전과 동일)
+    const add = document.createElement('button');
+    add.className = 'addbtn'; add.textContent = '+';
+    add.title = '이 폴더에 새 문서';
+    add.dataset.addfile = folder.id;
+    r.appendChild(add);
     frag.appendChild(r);
     treeOrder.push(selKey('folder', folder.id));
 
@@ -2321,6 +2335,10 @@ D.tree.addEventListener('click', e => {
     else if (act.dataset.act === 'trash') openTrash();
     return;
   }
+
+  // 폴더 행의 + 버튼 — 폴더를 여닫는 동작보다 먼저 걸러야 한다
+  const add = e.target.closest('[data-addfile]');
+  if (add) { createFile(add.dataset.addfile); return; }
 
   const fr = e.target.closest('[data-file]');
   if (fr) {
@@ -2766,7 +2784,7 @@ function restoreUI() {
   let data;
   try { data = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) { data = null; }
   if (!data) return null;
-  state.mode        = data.mode  || 'split';
+  state.mode        = data.mode === 'view' ? 'view' : 'edit';
   state.theme       = data.theme || 'light';
   state.zoom        = data.zoom  || 1;
   // 문서 폭 기본값을 전체 너비로 바꿨다. v4 이전에 저장된 값은 사용자가
@@ -2794,11 +2812,12 @@ function restoreTabs(saved) {
 
 /* ============================ 9. 모드 / 테마 =========================== */
 function setMode(m) {
+  if (m !== 'view') m = 'edit';        // 'split' 은 없앴다 — 예전 설정이 남아 있어도 편집으로 온다
   state.mode = m;
   document.body.dataset.mode = m;
   $$('#modeSwitch button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
-  if (m !== 'view') setTimeout(() => D.editor.focus(), 0);
-  if (m !== 'edit') { lastRendered = null; renderPreview(); }
+  if (m === 'edit') setTimeout(() => D.editor.focus(), 0);
+  else { lastRendered = null; renderPreview(); }
   persist();
 }
 const THEMES = ['light', 'sepia', 'dark'];
@@ -3207,7 +3226,7 @@ function showHelp() {
     + row('Ctrl+Shift+S', '다른 이름으로 저장') + row('Ctrl+W', '현재 탭 닫기')
     + row('Ctrl+P', '인쇄 / PDF 저장')
     + '</table><h4>보기</h4><table>'
-    + row('Ctrl+1', '보기 모드') + row('Ctrl+2', '분할 모드') + row('Ctrl+3', '편집 모드')
+    + row('Ctrl+1', '편집') + row('Ctrl+2', '미리보기')
     + row('Ctrl+\\', '탐색기 열기/닫기') + row('Ctrl+Shift+L', '테마 전환 (밝게 · 세피아 · 어둡게)')
     + row('Ctrl++', '글자 크게') + row('Ctrl+-', '글자 작게') + row('Ctrl+0', '글자 크기 초기화')
     + row('Ctrl+Tab', '다음 탭') + row('Ctrl+Shift+Tab', '이전 탭')
@@ -3338,10 +3357,13 @@ D.toc.addEventListener('click', e => {
   if (!a) return;
   e.preventDefault();
   const id = a.dataset.id;
-  const target = D.preview.querySelector('[id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
-  if (!target) return;
-  if (state.mode === 'edit') setMode('split');
-  D.pvPane.scrollTo({ top: target.offsetTop - 12, behavior: 'smooth' });
+  // 목차는 미리보기 쪽 위치로 이동한다. 편집 중이라면 먼저 미리보기로
+  // 바꾼 다음에 위치를 재야 한다 — 숨겨진 요소는 offsetTop 이 0 이다.
+  if (state.mode !== 'view') setMode('view');
+  requestAnimationFrame(() => {
+    const target = D.preview.querySelector('[id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+    if (target) D.pvPane.scrollTo({ top: target.offsetTop - 12, behavior: 'smooth' });
+  });
   $$('a', D.toc).forEach(x => x.classList.toggle('on', x === a));
 });
 
@@ -3455,9 +3477,8 @@ window.addEventListener('keydown', e => {
   else if (k === 'p') { e.preventDefault(); printDoc(); }
   else if (k === '\\') { e.preventDefault(); toggleSidebar(); }
   else if (k === 'l' && e.shiftKey) { e.preventDefault(); setTheme(THEMES[(THEMES.indexOf(state.theme) + 1) % THEMES.length]); }
-  else if (k === '1') { e.preventDefault(); setMode('view'); }
-  else if (k === '2') { e.preventDefault(); setMode('split'); }
-  else if (k === '3') { e.preventDefault(); setMode('edit'); }
+  else if (k === '1') { e.preventDefault(); setMode('edit'); }
+  else if (k === '2') { e.preventDefault(); setMode('view'); }
   else if (k === '=' || k === '+') { e.preventDefault(); setZoom(state.zoom + 0.1); }
   else if (k === '-' || k === '_') { e.preventDefault(); setZoom(state.zoom - 0.1); }
   else if (k === '0') { e.preventDefault(); setZoom(1); }
