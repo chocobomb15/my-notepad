@@ -654,7 +654,7 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
     <button class="btn icon" id="btnSidebar" title="탐색기 열기/닫기 (Ctrl+\)">◀</button>
     <div class="brand"><div class="logo">✎</div><span>NOTEPAD</span></div>
 
-    <button class="btn" id="btnNew" title="새 문서 (Ctrl+N)">
+    <button class="btn" id="btnNew" title="새 문서">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
       <span class="lbl">새 문서</span>
     </button>
@@ -697,10 +697,10 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
     </button>
   </header>
 
-  <!-- 탭 바 -->
-  <div class="tabbar" id="tabbar">
-    <button class="newtab" id="btnNewTab" title="새 탭 (Ctrl+N)">+</button>
-  </div>
+  <!-- 탭 바 --><!-- 새 문서는 상단 바의 "+ 새 문서" 버튼 하나로 통일한다.
+       예전엔 이 자리에도 + 버튼이 있었지만, 폴더를 열면 문서가 전부
+       탭으로 뜨는 구조라 탭이 많아지면 스크롤 끝까지 가야 닿았다. -->
+  <div class="tabbar" id="tabbar"></div>
 
   <!-- 본문 -->
   <div class="body">
@@ -1632,7 +1632,7 @@ function renderTabs() {
     frag.appendChild(b);
   }
   D.tabbar.querySelectorAll('.tab').forEach(n => n.remove());
-  D.tabbar.insertBefore(frag, $('#btnNewTab'));
+  D.tabbar.appendChild(frag);
   document.body.classList.toggle('empty-state', state.tabs.length === 0);
   const cur = D.tabbar.querySelector('.tab.on');
   if (cur) cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -3087,7 +3087,7 @@ function showHelp() {
   const row = (k, d) => '<tr><td>' + k.split('+').map(x => '<kbd>' + x + '</kbd>').join('+') + '</td><td>' + d + '</td></tr>';
   openSheet('도움말',
     '<h4>파일</h4><table>'
-    + row('Ctrl+O', '문서 열기') + row('Ctrl+N', '새 문서') + row('Ctrl+S', '저장')
+    + row('Ctrl+O', '탐색기 열기') + row('Ctrl+S', '저장')
     + row('Ctrl+Shift+S', '다른 이름으로 저장') + row('Ctrl+W', '현재 탭 닫기')
     + row('Ctrl+P', '인쇄 / PDF 저장')
     + '</table><h4>보기</h4><table>'
@@ -3143,7 +3143,6 @@ $('#btnZoomIn').addEventListener('click', () => setZoom(state.zoom + 0.1));
 $('#btnZoomOut').addEventListener('click', () => setZoom(state.zoom - 0.1));
 $('#zoomVal').addEventListener('click', () => setZoom(1));   // 눌러서 100% 로
 $('#btnNew').addEventListener('click', newDocFlow);
-$('#btnNewTab').addEventListener('click', newDocFlow);
 $('#btnSave').addEventListener('click', () => saveNow());
 $('#btnFind').addEventListener('click', () => (D.findbar.classList.contains('on') ? closeFind() : openFind()));
 $('#btnToc').addEventListener('click', () => {
@@ -3320,7 +3319,9 @@ window.addEventListener('keydown', e => {
 
   const k = e.key.toLowerCase();
   if (k === 'o') { e.preventDefault(); toggleSidebar(true); }
-  else if (k === 'n') { e.preventDefault(); newDocFlow(); }
+  // Ctrl+N 은 뺐다 — Chrome/Edge 가 "새 창" 으로 미리 예약해 둔 단축키라
+  // 페이지에서 preventDefault() 해도 막히지 않는다. 새 문서는 상단
+  // "+ 새 문서" 버튼이나 폴더 우클릭 메뉴로 만든다.
   else if (k === 's') { e.preventDefault(); saveNow(); }
   else if (k === 'w') { e.preventDefault(); if (state.active) closeTab(state.active); }
   else if (k === 'f') { e.preventDefault(); openFind(); }
