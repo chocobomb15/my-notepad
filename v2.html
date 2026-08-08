@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NOTEPAD</title>
+<link href="https://fonts.googleapis.com/css2?family=Nanum+Gothic:wght@400;700&family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
 <style>
 /* ============================================================
    변수 / 테마
@@ -314,7 +315,7 @@ body[data-mode="edit"] .editor-pane{flex:1 1 100%;border-right:0}
   flex:1;width:100%;border:0;outline:0;resize:none;
   padding:20px 24px 40vh;
   background:var(--bg-elev);color:var(--fg);
-  font-family:var(--font-mono);
+  font-family:var(--font-doc,var(--font-mono));
   font-size:calc(13.5px * var(--zoom,1));
   line-height:1.75;tab-size:2;
   white-space:pre-wrap;word-break:break-word;
@@ -333,8 +334,31 @@ body[data-mode="edit"] .editor-pane{flex:1 1 100%;border-right:0}
 .statusbar .chip{display:inline-flex;align-items:center;gap:5px}
 .statusbar .path{overflow:hidden;text-overflow:ellipsis;max-width:40vw;direction:rtl;text-align:left}
 .statusbar b{font-weight:600;color:var(--fg)}
-#saveState.ok{color:var(--ok)}
-#saveState.dirty{color:var(--warn)}
+
+/* --- 저장 상태 (헤더) ---
+   구버전은 저장 표시가 상단에 크게 있었다. 데이터가 올라갔는지가 이 앱에서
+   가장 중요한 정보라, 하단 구석이 아니라 눈에 띄는 자리에 둔다. */
+.savechip{
+  display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;
+  height:26px;padding:0 10px;border-radius:13px;
+  font-size:12px;font-weight:600;white-space:nowrap;
+  background:var(--bg-sunken);color:var(--fg-dim);
+  border:1px solid transparent;transition:.15s;
+}
+.savechip.ok{background:var(--ok-soft,#dafbe1);color:var(--ok);border-color:transparent}
+.savechip.dirty{background:var(--warn-soft,#fff8c5);color:var(--warn)}
+.savechip.busy{background:var(--accent-soft);color:var(--accent)}
+.savechip.err{background:var(--danger-soft,#ffebe9);color:var(--danger);border-color:var(--danger)}
+html[data-theme="dark"]{--ok-soft:#12261a;--warn-soft:#2e2409;--danger-soft:#3d1d1b}
+html[data-theme="sepia"]{--ok-soft:#e3ecd4;--warn-soft:#f6e9c4;--danger-soft:#f3dcd6}
+
+.fontsel{
+  height:28px;padding:0 6px;flex:0 0 auto;
+  background:var(--bg-sunken);color:var(--fg);
+  border:1px solid var(--border);border-radius:7px;
+  font-family:inherit;font-size:12.5px;cursor:pointer;outline:0;
+}
+.fontsel:focus{border-color:var(--accent)}
 
 /* ============================================================
    빈 화면 / 드롭 오버레이
@@ -431,6 +455,7 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
    ============================================================ */
 .markdown-body{
   max-width:var(--doc-width,860px);
+  font-family:var(--font-doc,var(--font-ui));
   margin:0 auto;padding:38px 44px 45vh;
   font-size:calc(15.5px * var(--zoom,1));
   line-height:1.78;
@@ -582,6 +607,10 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
 
     <div class="tb-spacer"></div>
 
+    <span class="savechip" id="saveState">준비됨</span>
+
+    <select id="fontSel" class="fontsel" title="본문 글꼴"></select>
+
     <button class="btn icon" id="btnFind" title="문서 내 찾기 (Ctrl+F)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
     </button>
@@ -649,7 +678,6 @@ mark.find.cur{background:var(--mark-active);box-shadow:0 0 0 2px var(--mark-acti
 
   <!-- 상태 바 -->
   <footer class="statusbar">
-    <span class="chip" id="saveState">준비됨</span>
     <span class="chip path" id="filePath"></span>
     <span class="sp"></span>
     <span class="chip" id="statHead"></span>
@@ -1401,6 +1429,7 @@ const state = {
   tabs: [], active: null,
   mode: 'split', theme: 'light', zoom: 1, sidebar: true, width: 0,   // 0 = 전체 너비
   sidebarView: 'tree',                 // 'tree' | 'toc'
+  font: 'nanum',                       // 본문 글꼴 (편집·미리보기 공통)
   folders: [], files: [],              // Firestore 원본 (본문 포함)
   trashFolders: [], trashFiles: [],
   openFolders: [],                     // 펼쳐 둔 폴더 id
@@ -1416,8 +1445,25 @@ const D = {
   statHead: $('#statHead'), statCount:$('#statCount'), statRead:$('#statRead'), statZoom:$('#statZoom'),
   tree:     $('#tree'),     gate:     $('#gate'),      gatePw:  $('#gatePw'),
   gateBtn:  $('#gateBtn'),  gateErr:  $('#gateErr'),   sideSw:  $('#sideSwitch'),
-  statSize: $('#statSize'),
+  statSize: $('#statSize'), fontSel:  $('#fontSel'),
 };
+
+/* 본문 글꼴 — 편집 화면과 미리보기에 함께 걸린다.
+   구버전에 있던 선택지를 그대로 옮겼다. */
+const FONTS = {
+  nanum:  "'Nanum Gothic', sans-serif",
+  noto:   "'Noto Sans KR', sans-serif",
+  system: "'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue', sans-serif",
+  mono:   "'D2Coding','Cascadia Mono',Consolas,'Nanum Gothic Coding', monospace",
+};
+const FONT_LABELS = { nanum:'나눔고딕', noto:'Noto Sans KR', system:'시스템 기본', mono:'고정폭(코드)' };
+
+function setFont(key) {
+  state.font = FONTS[key] ? key : 'nanum';
+  document.documentElement.style.setProperty('--font-doc', FONTS[state.font]);
+  if (D.fontSel) D.fontSel.value = state.font;
+  persist();
+}
 
 const activeTab = () => state.tabs.find(t => t.id === state.active) || null;
 const isDirty   = t => !!t && t.content !== t.saved;
@@ -1585,14 +1631,29 @@ function renderToc() {
   D.toc.appendChild(frag);
 }
 
+// 저장 상태 한 곳에서만 그린다. 여러 군데서 문자열을 만들면 서로 어긋난다.
+const SAVE_CHIP = {
+  idle:  ['준비됨',      ''],
+  ok:    ['✓ 저장됨',    'ok'],
+  dirty: ['● 저장 대기', 'dirty'],
+  busy:  ['⟳ 저장 중…',  'busy'],
+  err:   ['⚠ 저장 실패', 'err'],
+};
+function setSaveChip(kind) {
+  const [text, cls] = SAVE_CHIP[kind] || SAVE_CHIP.idle;
+  D.saveState.textContent = text;
+  D.saveState.className = 'savechip ' + cls;
+  D.saveState.title = kind === 'err' ? (saveError || '') : '';
+}
+
 function updateStatus() {
   const t = activeTab();
   if (!t) {
-    D.saveState.textContent = '준비됨'; D.saveState.className = 'chip';
+    setSaveChip('idle');
     D.filePath.textContent = ''; D.statHead.textContent = '';
     D.statCount.textContent = ''; D.statRead.textContent = '';
     D.statSize.textContent = '';
-    D.statZoom.textContent = Math.round(state.zoom * 100) + '%';
+    D.statZoom.textContent = '확대 ' + Math.round(state.zoom * 100) + '%';
     return;
   }
   const text  = D.editor.value;
@@ -1603,10 +1664,7 @@ function updateStatus() {
   const mins  = Math.max(1, Math.round(noSp / 500 + words / 250));
 
   const dirty = isDirty(t);
-  if (saveError)                 { D.saveState.textContent = '⚠ 저장 실패'; D.saveState.className = 'chip dirty'; D.saveState.title = saveError; }
-  else if (savingNow.size)       { D.saveState.textContent = '저장 중…';    D.saveState.className = 'chip'; D.saveState.title = ''; }
-  else if (dirty)                { D.saveState.textContent = '● 저장 대기'; D.saveState.className = 'chip dirty'; D.saveState.title = ''; }
-  else                           { D.saveState.textContent = '✓ 저장됨';    D.saveState.className = 'chip ok'; D.saveState.title = ''; }
+  setSaveChip(saveError ? 'err' : savingNow.size ? 'busy' : dirty ? 'dirty' : 'ok');
   D.filePath.textContent = t.path ? t.path + ' / ' + t.name : t.name;
   D.filePath.title = D.filePath.textContent;
   D.statHead.textContent = '제목 ' + ((t.headings || []).length);
@@ -1620,8 +1678,10 @@ function updateStatus() {
   D.statSize.style.fontWeight = pct >= 60 ? '700' : '';
   D.statSize.title = 'Firestore 는 문서 하나에 1 MiB 까지만 저장할 수 있습니다.';
 
-  D.statRead.textContent = '약 ' + mins + '분';
-  D.statZoom.textContent = Math.round(state.zoom * 100) + '%';
+  D.statRead.textContent = '읽는 시간 약 ' + mins + '분';
+  D.statRead.title = '이 문서를 소리 내지 않고 읽었을 때 걸리는 예상 시간입니다.';
+  D.statZoom.textContent = '확대 ' + Math.round(state.zoom * 100) + '%';
+  D.statZoom.title = '화면 글자 크기입니다. Ctrl + / Ctrl - 로 조절하고 Ctrl 0 으로 되돌립니다.';
   document.title = t.name + ' — NOTEPAD';
   const tabEl = D.tabbar.querySelector('.tab[data-id="' + t.id + '"]');
   if (tabEl) tabEl.classList.toggle('dirty', dirty);
@@ -2108,6 +2168,7 @@ const persist = debounce(() => {
     localStorage.setItem(LS_KEY, JSON.stringify({
       v: 4, mode: state.mode, theme: state.theme, zoom: state.zoom,
       sidebar: state.sidebar, width: state.width, sidebarView: state.sidebarView,
+      font: state.font,
       openFolders: state.openFolders,
       openDocs: state.tabs.map(t => t.docId).filter(Boolean),
       activeDoc: (activeTab() || {}).docId || null,
@@ -2127,6 +2188,7 @@ function restoreUI() {
   state.width       = (data.v >= 4) ? (data.width ?? 0) : 0;
   state.sidebar     = data.sidebar !== false;
   state.sidebarView = data.sidebarView || 'tree';
+  state.font        = FONTS[data.font] ? data.font : 'nanum';
   state.openFolders = Array.isArray(data.openFolders) ? data.openFolders : [];
   return data;
 }
@@ -2539,6 +2601,7 @@ $('#modalBody').addEventListener('click', e => {
 /* ============================ 13. 이벤트 연결 ========================== */
 const notYet = () => toast('읽기 전용 단계입니다. 편집·저장은 다음 단계에서 붙습니다.');
 $('#btnSidebar').addEventListener('click', () => toggleSidebar());
+D.fontSel.addEventListener('change', () => setFont(D.fontSel.value));
 $('#btnNew').addEventListener('click', notYet);      // 새 문서 만들기는 3-4 에서
 $('#btnNewTab').addEventListener('click', notYet);
 $('#btnSave').addEventListener('click', () => saveNow());
@@ -2764,6 +2827,10 @@ function boot() {
   setWidth(state.width);
   toggleSidebar(state.sidebar);
   buildToolbar();
+
+  D.fontSel.innerHTML = Object.entries(FONT_LABELS)
+    .map(([k, v]) => '<option value="' + k + '">' + v + '</option>').join('');
+  setFont(state.font);
 
   // 사이드바 전환 상태 반영
   $$('#sideSwitch button').forEach(b => b.classList.toggle('on', b.dataset.view === state.sidebarView));
