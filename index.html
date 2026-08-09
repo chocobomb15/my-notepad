@@ -1562,7 +1562,16 @@ function render(){
   if(state.authed) saveSession();
   updateStatusBar(true);setSaveIndicator();
   if(state.globalOpen){renderGlobalResults();setTimeout(()=>{const el=document.getElementById("gsInput");if(el){el.focus();el.select();}},50);}
-  if(state.renamingId) setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
+  // 새 파일을 만들면 이름 입력칸에 자동으로 포커스를 준다. 그런데 이름을
+  // 무시하고 바로 에디터를 눌러 타이핑을 시작하면, 이 타이머가 조합 중인
+  // 한글 입력 도중 포커스를 가로채 글자가 튀거나 겹쳐 찍힌다. 이미
+  // 에디터에 포커스가 가 있으면(=사용자가 먼저 그쪽을 선택했으면)
+  // 빼앗지 않는다.
+  if(state.renamingId) setTimeout(()=>{
+    if(document.activeElement===document.getElementById("editor"))return;
+    const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");
+    if(el){el.focus();el.select();}
+  },50);
   if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
   setTimeout(initSortables,0);
 
