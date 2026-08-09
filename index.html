@@ -366,12 +366,40 @@ function landCaretAtLastMatch(fallbackScrollTop){
   }
 }
 // 커서 앞의 글자 n개 (자동 변환 판단용)
+// Range.toString() 은 <div> 같은 줄 경계를 줄바꿈으로 세지 않고 글자만
+// 이어붙인다. 그대로 쓰면 새 줄 맨 앞인데도 이전 줄의 마지막 글자가
+// 바로 앞 글자로 잡혀서, 대사가 줄 앞에서 시작하는 원고에서는 여는
+// 따옴표가 거의 나오지 않는다. 줄 경계를 직접 세어 넣는다.
+const LINE_BLOCK=/^(DIV|P|LI|BLOCKQUOTE|H[1-6])$/i;
 function charsBeforeCaret(n){
   const ed=document.getElementById("editor");
   const sel=window.getSelection();
-  if(!ed||!sel||!sel.rangeCount)return "";
-  const r=sel.getRangeAt(0),pre=r.cloneRange();
-  pre.selectNodeContents(ed);pre.setEnd(r.startContainer,r.startOffset);
+  if(!ed||!sel||!sel.rangeCount||!ed.contains(sel.anchorNode))return "";
+  const r=sel.getRangeAt(0);
+
+  // 커서가 속한 줄(블록)을 찾아 그 안에서만 앞 글자를 본다.
+  // 블록을 넘어가면 다른 줄이므로 '줄 시작'으로 취급해야 한다.
+  let block=r.startContainer;
+  if(block.nodeType===3)block=block.parentNode;
+  while(block&&block!==ed&&!LINE_BLOCK.test(block.tagName||""))block=block.parentNode;
+  if(!block)block=ed;
+
+  const pre=r.cloneRange();
+  try{
+    pre.selectNodeContents(block);
+    pre.setEnd(r.startContainer,r.startOffset);
+  }catch(e){return "";}
+
+  // 한 블록 안에서 <br> 로 줄이 나뉜 경우도 그 뒤는 새 줄로 본다
+  const frag=pre.cloneContents();
+  if(frag.querySelector&&frag.querySelector("br")){
+    const holder=document.createElement("div");
+    holder.appendChild(frag);
+    const parts=holder.innerHTML.split(/<br\s*\/?>/i);
+    const tail=document.createElement("div");
+    tail.innerHTML=parts[parts.length-1];
+    return (tail.textContent||"").slice(-n);
+  }
   return pre.toString().slice(-n);
 }
 
