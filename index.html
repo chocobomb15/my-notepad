@@ -50,7 +50,34 @@ let state={
   moveModal:null,scrollPositions:{},
   confirmDialog:null,
   trashFolders:[],trashFiles:[],trashOpen:false,exporting:false,
+  selected:[],selAnchor:null,      // 다중 선택 ('file:id' / 'folder:id')
+  helpOpen:false,
 };
+
+// ─── 다중 선택 ────────────────
+const selKey=(kind,id)=>kind+":"+id;
+const isSel =(kind,id)=>state.selected.includes(selKey(kind,id));
+let treeOrder=[];                  // 화면에 보이는 순서 — Shift 범위 선택용
+
+// ─── 토스트 ───────────────────
+let toastTimer=null;
+function toast(msg,kind){
+  let el=document.getElementById("toastbox");
+  if(!el){
+    el=document.createElement("div");
+    el.id="toastbox";
+    document.body.appendChild(el);
+  }
+  const t=T();
+  el.textContent=msg;
+  el.style.cssText=`position:fixed;left:50%;bottom:38px;transform:translateX(-50%);z-index:4000;
+    padding:10px 18px;border-radius:20px;font-size:13px;font-family:inherit;pointer-events:none;
+    box-shadow:0 8px 24px rgba(0,0,0,.25);opacity:1;transition:opacity .25s;
+    background:${kind==="err"?"#f87171":kind==="ok"?"#34d399":t.tx};
+    color:${kind?"#fff":t.bg};`;
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>{ if(el) el.style.opacity="0"; },2400);
+}
 
 const COLORS=["#60a5fa","#34d399","#f87171","#fbbf24","#a78bfa","#fb923c","#38bdf8","#e879f9"];
 function genId(){return Math.random().toString(36).slice(2,10)+Date.now().toString(36);}
@@ -100,7 +127,38 @@ async function loadData(){
     state.folders=[f1,f2];state.files=[fi1,fi2];
     state.openFolderIds=[f1.id];state.tabs=[{fileId:fi1.id,folderId:f1.id}];state.activeTab=fi1.id;
   }
+  restoreSession();
   render();
+}
+
+// ─── 세션 복원 ────────────────
+// 열어 둔 폴더·탭을 기억했다가 다시 열 때 되살린다. 본문은 Firestore 가
+// 원본이므로 여기에는 id 만 담는다. 본문을 복사해 두면 두 벌이 어긋난다.
+const SESSION_KEY="notepad_session_v1";
+let sessionRestored=false;
+function saveSession(){
+  try{
+    localStorage.setItem(SESSION_KEY,JSON.stringify({
+      openFolderIds:state.openFolderIds,
+      tabs:state.tabs.map(t=>t.fileId),
+      activeTab:state.activeTab,
+    }));
+  }catch(e){/* 용량 초과 등 무시 */}
+}
+function restoreSession(){
+  if(sessionRestored)return;
+  sessionRestored=true;
+  let s=null;
+  try{s=JSON.parse(localStorage.getItem(SESSION_KEY)||"null");}catch(e){s=null;}
+  if(!s)return;
+  // 지워졌거나 사라진 문서는 조용히 걸러낸다.
+  const alive=new Set(state.files.map(f=>f.id));
+  const aliveFolders=new Set(state.folders.map(f=>f.id));
+  const ids=(s.tabs||[]).filter(id=>alive.has(id));
+  if(!ids.length)return;
+  state.openFolderIds=(s.openFolderIds||[]).filter(id=>aliveFolders.has(id));
+  state.tabs=ids.map(id=>({fileId:id,folderId:state.files.find(f=>f.id===id).folderId}));
+  state.activeTab=alive.has(s.activeTab)?s.activeTab:ids[ids.length-1];
 }
 async function refreshData(){
   const btn=document.getElementById("refreshBtn");
@@ -220,12 +278,134 @@ function commitEditor(){
   if(saveTimers.has(id)) flushFile(id);
 }
 
+// ─── 커서 위치 다루기 ─────────
+// contenteditable 은 textarea 와 달리 커서를 숫자 하나로 못 잡는다.
+// 글자 수 기준 위치로 바꿔서 저장했다가 복원한다.
+function caretOffset(el){
+  const sel=window.getSelection();
+  if(!sel||!sel.rangeCount||!el.contains(sel.anchorNode))return null;
+  const r=sel.getRangeAt(0),pre=r.cloneRange();
+  pre.selectNodeContents(el);pre.setEnd(r.endContainer,r.endOffset);
+  return pre.toString().length;
+}
+function setCaret(el,offset){
+  if(offset==null)return;
+  const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+  let n,acc=0;
+  while(n=walker.nextNode()){
+    const len=n.textContent.length;
+    if(acc+len>=offset){
+      const r=document.createRange();
+      r.setStart(n,Math.max(0,Math.min(len,offset-acc)));r.collapse(true);
+      const s=window.getSelection();s.removeAllRanges();s.addRange(r);
+      return;
+    }
+    acc+=len;
+  }
+  const r=document.createRange();
+  r.selectNodeContents(el);r.collapse(false);
+  const s=window.getSelection();s.removeAllRanges();s.addRange(r);
+}
+// 커서 앞의 글자 n개 (자동 변환 판단용)
+function charsBeforeCaret(n){
+  const ed=document.getElementById("editor");
+  const sel=window.getSelection();
+  if(!ed||!sel||!sel.rangeCount)return "";
+  const r=sel.getRangeAt(0),pre=r.cloneRange();
+  pre.selectNodeContents(ed);pre.setEnd(r.startContainer,r.startOffset);
+  return pre.toString().slice(-n);
+}
+
+// ─── 되돌리기 / 다시 실행 ─────
+// render() 가 화면을 통째로 다시 그리면서 contenteditable 의 기본 되돌리기
+// 이력이 사라진다. 그래서 문서별로 직접 들고 간다.
+const UNDO_MAX=200;
+const undoHist=new Map();          // fileId -> {stack:[{html,caret}], idx}
+
+function undoInit(fileId,html){
+  undoHist.set(fileId,{stack:[{html:html||"",caret:null}],idx:0});
+}
+function undoPush(fileId,html,caret){
+  const h=undoHist.get(fileId);
+  if(!h){undoInit(fileId,html);return;}
+  if(h.stack[h.idx]&&h.stack[h.idx].html===html)return;
+  h.stack=h.stack.slice(0,h.idx+1);   // 되돌린 뒤 새로 치면 앞쪽 갈래는 버린다
+  h.stack.push({html,caret});
+  if(h.stack.length>UNDO_MAX)h.stack.shift();
+  h.idx=h.stack.length-1;
+}
+// 타이핑 중에는 일정 간격으로만 지점을 남긴다. 글자마다 남기면 한 번
+// 되돌릴 때 한 글자씩만 사라져 쓸모가 없다.
+let undoTimer=null;
+function undoPushSoon(){
+  clearTimeout(undoTimer);
+  undoTimer=setTimeout(()=>{
+    const ed=document.getElementById("editor");
+    if(ed&&state.activeTab)undoPush(state.activeTab,ed.innerHTML,caretOffset(ed));
+    updateUndoButtons();
+  },450);
+}
+function undoMove(dir){
+  const id=state.activeTab,ed=document.getElementById("editor");
+  if(!id||!ed)return;
+  let h=undoHist.get(id);
+  if(!h){undoInit(id,ed.innerHTML);h=undoHist.get(id);}
+  clearTimeout(undoTimer);
+  // 아직 안 남긴 최신 상태를 먼저 남긴다. 안 그러면 방금 친 것이 빠진다.
+  if(h.stack[h.idx].html!==ed.innerHTML)undoPush(id,ed.innerHTML,caretOffset(ed));
+  const next=h.idx+dir;
+  if(next<0||next>=h.stack.length){toast(dir<0?"더 되돌릴 것이 없습니다":"더 되돌아올 것이 없습니다");return;}
+  h.idx=next;
+  const snap=h.stack[next];
+  ed.innerHTML=snap.html;
+  state.files=state.files.map(f=>f.id===id?{...f,content:snap.html}:f);
+  ed.focus();setCaret(ed,snap.caret);
+  updateStatusBar(true);scheduleSave(id);updateUndoButtons();
+}
+function updateUndoButtons(){
+  const id=state.activeTab,h=id?undoHist.get(id):null;
+  const ed=document.getElementById("editor");
+  const bu=document.getElementById("btnUndo"),br=document.getElementById("btnRedo");
+  const canU=!!h&&(h.idx>0||(ed&&h.stack[h.idx].html!==ed.innerHTML));
+  const canR=!!h&&h.idx<h.stack.length-1;
+  if(bu){bu.style.opacity=canU?"1":"0.35";bu.style.pointerEvents=canU?"auto":"none";}
+  if(br){br.style.opacity=canR?"1":"0.35";br.style.pointerEvents=canR?"auto":"none";}
+}
+
+// ─── 자동 글자 변환 ───────────
+// 쌍따옴표를 여는/닫는 모양으로 바꾸고, 마침표 세 개를 말줄임표로 바꾼다.
+// 여는 따옴표로 볼 자리: 줄 처음이거나 앞이 공백·여는 괄호인 경우.
+function smartQuote(){
+  const before=charsBeforeCaret(1);
+  return (!before||/[\s(\[{「『“‘—–\-]/.test(before))?"“":"”";
+}
+function handleTypography(e){
+  if(e.isComposing)return false;      // 한글 조합 중에는 건드리지 않는다
+  if(e.ctrlKey||e.metaKey||e.altKey)return false;
+  if(e.key==='"'){
+    e.preventDefault();
+    document.execCommand("insertText",false,smartQuote());
+    handleTextChange();
+    return true;
+  }
+  if(e.key==="."&&charsBeforeCaret(2)===".."){
+    e.preventDefault();
+    document.execCommand("delete",false,null);
+    document.execCommand("delete",false,null);
+    document.execCommand("insertText",false,"…");
+    handleTextChange();
+    return true;
+  }
+  return false;
+}
+
 // ─── Text / format ───────────
 function handleTextChange(){
   const id=state.activeTab;
   const content=getEditorContent();
   state.files=state.files.map(f=>f.id===id?{...f,content}:f);
   updateStatusBar();
+  undoPushSoon();
   scheduleSave(id);
 }
 function applyFormat(type){
@@ -361,6 +541,87 @@ async function moveFolderTo(folderId,targetParentId){
   const folder=state.folders.find(f=>f.id===folderId);
   await saveFolder(folder);
   state.moveModal=null;render();
+}
+
+// ─── 다중 선택 일괄 처리 ──────
+// 선택한 것들을 한 폴더로 옮긴다. 폴더를 자기 자신이나 자기 하위로는
+// 넣지 못하게 막고, 문서는 폴더 안에만 둘 수 있으므로 최상위는 건너뛴다.
+async function moveSelection(targetId){
+  const sel=state.selected.map(k=>k.split(":"));
+  const movingFolders=sel.filter(([k])=>k==="folder").map(([,id])=>id);
+  const blocked=new Set(movingFolders.flatMap(getAllDescendantFolderIds));
+  if(targetId&&blocked.has(targetId)){toast("폴더를 자기 자신 안으로는 옮길 수 없습니다","err");return;}
+
+  const jobs=[];let moved=0,skipped=0;
+  for(const [kind,id] of sel){
+    if(kind==="folder"){
+      const f=state.folders.find(x=>x.id===id);
+      if(!f||(f.parentId||null)===(targetId||null))continue;
+      const maxO=state.folders.filter(x=>(x.parentId||null)===(targetId||null)).reduce((m,x)=>Math.max(m,x.order??0),0);
+      const next={...f,parentId:targetId||null,order:maxO+1};
+      state.folders=state.folders.map(x=>x.id===id?next:x);
+      jobs.push(saveFolder(next));moved++;
+    } else {
+      if(!targetId){skipped++;continue;}     // 문서는 최상위에 둘 수 없다
+      const f=state.files.find(x=>x.id===id);
+      if(!f||f.folderId===targetId)continue;
+      const maxO=state.files.filter(x=>x.folderId===targetId).reduce((m,x)=>Math.max(m,x.order??0),0);
+      const next={...f,folderId:targetId,order:maxO+1};
+      state.files=state.files.map(x=>x.id===id?next:x);
+      state.tabs=state.tabs.map(t=>t.fileId===id?{...t,folderId:targetId}:t);
+      jobs.push(saveFile(next));moved++;
+    }
+  }
+  state.selected=[];state.selAnchor=null;state.moveModal=null;render();
+  try{
+    await Promise.all(jobs);
+    toast(`${moved}개를 옮겼습니다`+(skipped?` (문서 ${skipped}개는 최상위로 못 감)`:""),"ok");
+  }catch(e){toast("이동 실패: "+(e.code||e.message),"err");}
+}
+
+// 선택한 것들을 한 묶음으로 휴지통에 보낸다.
+async function deleteSelection(){
+  const sel=state.selected.map(k=>k.split(":"));
+  const batch=genId(),now=Date.now();
+  const folderIds=[...new Set(sel.filter(([k])=>k==="folder").flatMap(([,id])=>getAllDescendantFolderIds(id)))];
+  const fileIds=[...new Set([
+    ...sel.filter(([k])=>k==="file").map(([,id])=>id),
+    ...state.files.filter(f=>folderIds.includes(f.folderId)).map(f=>f.id),
+  ])];
+
+  // 지우기 전에 예약된 저장을 버린다. 안 그러면 지운 문서가 되살아난다.
+  fileIds.forEach(cancelSave);
+  state.tabs=state.tabs.filter(t=>!fileIds.includes(t.fileId));
+  if(fileIds.includes(state.activeTab)) state.activeTab=state.tabs.length?state.tabs[state.tabs.length-1].fileId:null;
+
+  const goneFolders=state.folders.filter(f=>folderIds.includes(f.id));
+  const goneFiles  =state.files.filter(f=>fileIds.includes(f.id));
+  state.trashFolders=[...goneFolders.map(f=>({...f,deletedAt:now,deletedBatch:batch})),...state.trashFolders];
+  state.trashFiles  =[...goneFiles.map(f=>({...f,deletedAt:now,deletedBatch:batch})),...state.trashFiles];
+  state.folders=state.folders.filter(f=>!folderIds.includes(f.id));
+  state.files  =state.files.filter(f=>!fileIds.includes(f.id));
+  state.selected=[];state.selAnchor=null;render();
+
+  try{
+    await Promise.all([
+      ...fileIds.map(id=>softDelFile(id,batch)),
+      ...folderIds.map(id=>softDelFolder(id,batch)),
+    ]);
+    toast(`휴지통으로 보냈습니다 · 문서 ${fileIds.length}개`,"ok");
+  }catch(e){toast("삭제 실패: "+(e.code||e.message),"err");}
+}
+
+// 선택 묶음의 규모 (확인 문구용)
+function selectionScope(){
+  const sel=state.selected.map(k=>k.split(":"));
+  const folderIds=[...new Set(sel.filter(([k])=>k==="folder").flatMap(([,id])=>getAllDescendantFolderIds(id)))];
+  const fileIds=[...new Set([
+    ...sel.filter(([k])=>k==="file").map(([,id])=>id),
+    ...state.files.filter(f=>folderIds.includes(f.folderId)).map(f=>f.id),
+  ])];
+  const chars=state.files.filter(f=>fileIds.includes(f.id))
+    .reduce((n,f)=>n+htmlToText(f.content||"").length,0);
+  return {folderIds,fileIds,chars};
 }
 
 // ─── Folder / File actions ────
@@ -629,8 +890,15 @@ function renderStatusBar(){
     title="Firestore는 문서 하나에 1 MiB까지만 저장할 수 있습니다. 넘으면 저장이 실패하니 문서를 나눠 주세요.">
     ${(bytes/1024).toFixed(0)}KB · 상한의 ${pct}%</span>`;
 
+  // 단어 수와 읽는 시간. 한글은 띄어쓰기 단위가 곧 어절이라 이 계산이 무난하다.
+  const words=(txt.trim().match(/\S+/g)||[]).length;
+  const noSp=txt.replace(/\s/g,"").length;
+  const mins=Math.max(1,Math.round(noSp/500+words/250));
+
   sb.innerHTML=`<span>${esc(file.name)}</span><span>줄: ${txt.split("\n").length.toLocaleString()}</span>`
-    +`<span>글자: ${txt.length.toLocaleString()}</span>${cap}`
+    +`<span>글자: ${txt.length.toLocaleString()}</span>`
+    +`<span>단어: ${words.toLocaleString()}</span>`
+    +`<span title="소리 내지 않고 읽었을 때의 예상 시간입니다.">읽는 시간 약 ${mins}분</span>${cap}`
     +`<span>${state.wordWrap?"줄 바꿈 켜짐":"꺼짐"}</span>${tail}`;
 }
 
@@ -745,13 +1013,56 @@ function renderConfirm(t,fontFamily){
   </div>`;
 }
 
+// ─── 도움말 ───────────────────
+function renderHelp(t,fontFamily){
+  if(!state.helpOpen) return "";
+  const row=(k,d)=>`<tr><td style="padding:4px 14px 4px 0;white-space:nowrap;color:${t.tx};font-weight:600;">${k}</td><td style="padding:4px 0;color:${t.mt};">${d}</td></tr>`;
+  const head=s=>`<div style="font-size:10.5px;font-weight:700;letter-spacing:.05em;color:${t.mt};margin:16px 0 6px;">${s}</div>`;
+  return `
+  <div onclick="window._helpClose()" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:3200;display:flex;align-items:center;justify-content:center;">
+    <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;padding:22px 24px;width:min(460px,calc(100% - 40px));max-height:80vh;overflow-y:auto;box-shadow:0 16px 40px rgba(0,0,0,0.4);font-family:${fontFamily};">
+      <div style="font-size:15px;font-weight:700;color:${t.tx};">도움말</div>
+      ${head("편집")}
+      <table style="width:100%;font-size:12px;border-collapse:collapse;">
+        ${row("Ctrl+Z","되돌리기")}${row("Ctrl+Shift+Z","다시 실행")}
+        ${row("Ctrl+B / I / U","굵게 / 기울임 / 밑줄")}
+        ${row("F5","날짜·시간 삽입")}${row("Tab","공백 4칸")}
+      </table>
+      ${head("찾기 · 보기")}
+      <table style="width:100%;font-size:12px;border-collapse:collapse;">
+        ${row("Ctrl+H / Ctrl+F","찾기·바꾸기")}
+        ${row("Ctrl+＋ / Ctrl+－","글자 크게 / 작게")}
+        ${row("Esc","창 닫기 · 선택 해제")}
+        ${row("F1","이 도움말")}
+      </table>
+      ${head("탐색기")}
+      <table style="width:100%;font-size:12px;border-collapse:collapse;">
+        ${row("Ctrl+클릭","여러 개 골라 선택")}
+        ${row("Shift+클릭","범위로 선택")}
+        ${row("우클릭","이름 바꾸기 · 이동 · 삭제")}
+        ${row("여럿 선택 후 우클릭","한꺼번에 이동 · 삭제")}
+      </table>
+      ${head("자동 변환")}
+      <table style="width:100%;font-size:12px;border-collapse:collapse;">
+        ${row("\"","여는·닫는 쌍따옴표(“ ”)로 자동 변환")}
+        ${row("...","말줄임표(…)로 자동 변환")}
+      </table>
+      <button onclick="window._helpClose()" style="${btnC(t)};width:100%;margin-top:18px;padding:9px;text-align:center;">닫기</button>
+    </div>
+  </div>`;
+}
+
 // ─── 이동 모달 렌더링 ─────────
 function renderMoveModal(t,fontFamily){
   if(!state.moveModal) return "";
-  const {itemId,itemType}=state.moveModal;
+  const {itemId,itemType,multi}=state.moveModal;
   // 파일이동: 모든 폴더 선택 가능 / 폴더이동: 자기자신·하위폴더 제외
-  const excluded=itemType==="folder"?getAllDescendantFolderIds(itemId):[];
+  // 여러 개를 옮길 때는 선택된 폴더들의 하위를 전부 제외한다.
+  const excluded=multi
+    ? state.selected.filter(k=>k.startsWith("folder:")).flatMap(k=>getAllDescendantFolderIds(k.slice(7)))
+    : (itemType==="folder"?getAllDescendantFolderIds(itemId):[]);
   const targets=state.folders.filter(f=>!excluded.includes(f.id));
+  const hasFiles=multi&&state.selected.some(k=>k.startsWith("file:"));
 
   function folderOptions(parentId,depth){
     return state.folders
@@ -769,7 +1080,8 @@ function renderMoveModal(t,fontFamily){
   }
 
   // 폴더이동: 루트(최상위)로 이동 옵션 추가
-  const rootOption=itemType==="folder"?`
+  // 여러 개를 옮길 때는 문서가 섞여 있으면 최상위를 못 쓴다 (문서는 폴더 안에만).
+  const rootOption=(multi?!hasFiles:itemType==="folder")?`
     <div onclick="window._moveTo('__root__')"
       style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;border-radius:6px;"
       onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
@@ -780,9 +1092,11 @@ function renderMoveModal(t,fontFamily){
   <div onclick="window._closeMoveModal()" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:2000;display:flex;align-items:center;justify-content:center;">
     <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;padding:20px;min-width:260px;max-height:420px;overflow-y:auto;box-shadow:0 16px 40px rgba(0,0,0,0.3);font-family:${fontFamily};">
       <div style="font-size:14px;font-weight:700;color:${t.tx};margin-bottom:12px;">📂 이동할 폴더 선택</div>
-      <div style="font-size:11px;color:${t.mt};margin-bottom:10px;">${itemType==="file"
-        ?"파일: "+esc(state.files.find(f=>f.id===itemId)?.name||"")
-        :"폴더: "+esc(state.folders.find(f=>f.id===itemId)?.name||"")}</div>
+      <div style="font-size:11px;color:${t.mt};margin-bottom:10px;">${multi
+        ?`${state.selected.length}개 선택됨`+(hasFiles?" · 문서는 폴더 안에만 둘 수 있습니다":"")
+        :itemType==="file"
+          ?"파일: "+esc(state.files.find(f=>f.id===itemId)?.name||"")
+          :"폴더: "+esc(state.folders.find(f=>f.id===itemId)?.name||"")}</div>
       <div style="border-top:1px solid ${t.bd};padding-top:8px;">
         ${rootOption}
         ${folderOptions(null,0)}
@@ -796,6 +1110,7 @@ function renderMoveModal(t,fontFamily){
 // ─── Recursive folder renderer ─
 function renderFolderTree(parentId,depth){
   const t=T();
+  if(!parentId) treeOrder=[];   // 최상위에서 시작할 때만 초기화
   const children=state.folders.filter(f=>(f.parentId||null)===(parentId||null))
     .sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
   if(!children.length) return "";
@@ -803,10 +1118,13 @@ function renderFolderTree(parentId,depth){
     const isOpen=state.openFolderIds.includes(folder.id);
     const ff=state.files.filter(f=>f.folderId===folder.id).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
     const pad=12+depth*14;
+    treeOrder.push(selKey("folder",folder.id));
+    const fSel=isSel("folder",folder.id);
+    const fBg=fSel?t.ac+"33":"transparent";
     return `<div>
-      <div class="folder-row" onclick="window._tf('${folder.id}')" oncontextmenu="window._cm(event,'folder','${folder.id}')"
-        style="display:flex;align-items:center;padding:6px 8px 6px ${pad}px;cursor:pointer;gap:4px;border-radius:4px;margin:1px 6px;"
-        onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
+      <div class="folder-row" onclick="window._tf('${folder.id}',event)" oncontextmenu="window._cm(event,'folder','${folder.id}')"
+        style="display:flex;align-items:center;padding:6px 8px 6px ${pad}px;cursor:pointer;gap:4px;border-radius:4px;margin:1px 6px;background:${fBg};"
+        onmouseenter="this.style.background='${fSel?t.ac+"33":t.hv}'" onmouseleave="this.style.background='${fBg}'">
         ${dh}
         <span style="font-size:10px;color:${t.mt};">${isOpen?"▾":"▸"}</span>
         <span style="position:relative;display:inline-block;font-size:${depth>0?12:13}px;">📁<span style="position:absolute;bottom:-1px;right:-3px;width:8px;height:8px;border-radius:50%;background:${folder.color};border:2px solid ${t.sb};"></span></span>
@@ -827,19 +1145,23 @@ function renderFolderTree(parentId,depth){
         </div>
         <!-- 파일 목록 -->
         <div id="fileList-${folder.id}">
-          ${ff.map(file=>`
-            <div class="file-row" onclick="window._of('${file.id}')" oncontextmenu="window._cm(event,'file','${file.id}')"
+          ${ff.map(file=>{
+            treeOrder.push(selKey("file",file.id));
+            const sSel=isSel("file",file.id);
+            const bg=sSel?t.ac+"33":(state.activeTab===file.id?t.ac+"22":"transparent");
+            return `
+            <div class="file-row" onclick="window._of('${file.id}',event)" oncontextmenu="window._cm(event,'file','${file.id}')"
               style="display:flex;align-items:center;padding:4px 8px 4px ${pad+16}px;cursor:pointer;gap:4px;border-radius:4px;margin:1px 6px;
-                background:${state.activeTab===file.id?t.ac+"22":"transparent"};
+                background:${bg};
                 border-left:${state.activeTab===file.id?`2px solid ${t.ac}`:"2px solid transparent"};"
-              onmouseenter="this.style.background='${state.activeTab===file.id?t.ac+"22":t.hv}'"
-              onmouseleave="this.style.background='${state.activeTab===file.id?t.ac+"22":"transparent"}'">
+              onmouseenter="this.style.background='${sSel?t.ac+"33":(state.activeTab===file.id?t.ac+"22":t.hv)}'"
+              onmouseleave="this.style.background='${bg}'">
               ${dh}
               <span style="font-size:11px;">📄</span>
               ${state.renamingId===file.id
                 ?`<input id="renameInput" value="${esc(state.renamingVal)}" onclick="event.stopPropagation()" oninput="window._ri(this.value)" onkeydown="window._rk(event,'${file.id}')" onblur="window._rc('${file.id}')" style="${inpC(t)};flex:1;font-size:11px;"/>`
                 :`<span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(file.name)}</span>`}
-            </div>`).join("")}
+            </div>`;}).join("")}
         </div>`:""}
     </div>`;
   }).join("");
@@ -883,7 +1205,10 @@ function render(){
     <div style="display:flex;align-items:center;height:44px;background:${t.sb};border-bottom:1px solid ${t.bd};padding:0 12px;gap:8px;flex-shrink:0;">
       <button onclick="window._btn('sidebar')" style="${btnC(t)};padding:3px 7px;">${state.sidebarOpen?"◀":"▶"}</button>
       <span style="font-size:15px;font-weight:700;letter-spacing:2px;color:${t.ac};">✎ NOTEPAD</span>
+      <button id="btnUndo" onclick="window._undo()" title="되돌리기 (Ctrl+Z)" style="${btnC(t)};padding:3px 8px;">↶</button>
+      <button id="btnRedo" onclick="window._redo()" title="다시 실행 (Ctrl+Shift+Z)" style="${btnC(t)};padding:3px 8px;">↷</button>
       <div style="flex:1"></div>
+      <button onclick="window._help()" title="도움말 (F1)" style="${btnC(t)}">?</button>
       <select onchange="window._setFont(this.value)" style="${inpC(t)};cursor:pointer;padding:3px 6px;">
         ${Object.entries(FONT_LABELS).map(([k,v])=>`<option value="${k}"${state.font===k?" selected":""}>${v}</option>`).join("")}
       </select>
@@ -1011,7 +1336,11 @@ function render(){
       <div id="ctxmenu" style="position:fixed;top:${state.contextMenu.y}px;left:${state.contextMenu.x}px;
         background:${t.sb};border:1px solid ${t.bd};border-radius:6px;z-index:1000;min-width:150px;
         box-shadow:0 8px 24px rgba(0,0,0,0.3);overflow:hidden;font-family:${fontFamily};">
-        ${state.contextMenu.type==="file"
+        ${state.selected.length>1
+          ?`<div style="padding:7px 16px 4px;font-size:10.5px;color:${t.mt};font-weight:700;">${state.selected.length}개 선택됨</div>
+             <div onclick="window._moveSel()" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">📂 한꺼번에 이동</div>
+             <div onclick="window._delSel()" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">🗑 한꺼번에 휴지통으로</div>`
+        : state.contextMenu.type==="file"
           ?`<div onclick="window._ctxA('rename','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">이름 바꾸기</div>
              <div onclick="window._ctxA('movefile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">다른 폴더로 이동</div>
              <div onclick="window._ctxA('delfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">삭제</div>`
@@ -1037,11 +1366,18 @@ function render(){
     <!-- 휴지통 -->
     ${renderTrash(t,fontFamily)}
 
+    <!-- 도움말 -->
+    ${renderHelp(t,fontFamily)}
+
     <!-- 확인 모달 -->
     ${renderConfirm(t,fontFamily)}
   </div>`;
 
   if(activeFile){const ed=document.getElementById("editor");if(ed)ed.innerHTML=textToHTML(activeFile.content);}
+  // 문서를 처음 열면 되돌리기 이력의 출발점을 잡아둔다.
+  if(activeFile&&!undoHist.has(activeFile.id)) undoInit(activeFile.id,textToHTML(activeFile.content));
+  updateUndoButtons();
+  if(state.authed) saveSession();
   updateStatusBar(true);setSaveIndicator();
   if(state.renamingId) setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
   if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
@@ -1063,8 +1399,28 @@ function render(){
     else if(a==="lock")          {localStorage.removeItem("notepad_authed");state.authed=false;state.pwInput="";state.pwError=false;render();}
   };
   window._setFont=(v)=>{state.font=v;render();};
-  window._tf=toggleFolder;
-  window._of=(id)=>{const f=state.files.find(x=>x.id===id);if(f)openFile(f);};
+  // Ctrl 로 하나씩 더하고 Shift 로 범위를 잡는다. 여러 개를 골라 한꺼번에
+  // 옮기거나 지우기 위한 것이다. true 를 돌려주면 여는 동작은 하지 않는다.
+  window._pick=(kind,id,e)=>{
+    const key=selKey(kind,id);
+    if(e&&e.shiftKey&&state.selAnchor){
+      const a=treeOrder.indexOf(state.selAnchor),b=treeOrder.indexOf(key);
+      if(a>=0&&b>=0){state.selected=treeOrder.slice(Math.min(a,b),Math.max(a,b)+1);render();return true;}
+    }
+    if(e&&(e.ctrlKey||e.metaKey)){
+      state.selected=state.selected.includes(key)
+        ? state.selected.filter(k=>k!==key)
+        : [...state.selected,key];
+      state.selAnchor=key;render();return true;
+    }
+    state.selected=[key];state.selAnchor=key;
+    return false;
+  };
+  window._tf=(id,e)=>{ if(window._pick("folder",id,e))return; toggleFolder(id); };
+  window._of=(id,e)=>{
+    if(window._pick("file",id,e))return;
+    const f=state.files.find(x=>x.id===id);if(f)openFile(f);
+  };
   window._nf=newFile;
   window._at=(id)=>{
     const ed=document.getElementById("editor");
@@ -1093,7 +1449,24 @@ function render(){
     state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";render();
     setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
   };
-  window._cm=(e,type,id)=>{e.preventDefault();e.stopPropagation();state.contextMenu={type,id,x:e.clientX,y:e.clientY};render();};
+  window._cm=(e,type,id)=>{
+    e.preventDefault();e.stopPropagation();
+    // 선택 밖을 누르면 그것만 선택한다. 선택 안이면 선택 전체가 대상이다.
+    if(!isSel(type,id)){state.selected=[selKey(type,id)];state.selAnchor=selKey(type,id);}
+    state.contextMenu={type,id,x:e.clientX,y:e.clientY};render();
+  };
+  window._moveSel=()=>{state.moveModal={multi:true};state.contextMenu=null;render();};
+  window._delSel=()=>{
+    const {folderIds,fileIds,chars}=selectionScope();
+    state.contextMenu=null;
+    askConfirm({
+      title:"휴지통으로 보내기",
+      message:`폴더 <b>${folderIds.length}</b>개 · 문서 <b>${fileIds.length}</b>개를 휴지통으로 보냅니다.`,
+      detail:`본문 ${chars.toLocaleString()}자<br>🗑 휴지통에서 한 번에 되돌릴 수 있습니다.`,
+      okLabel:"휴지통으로",
+      onConfirm:()=>deleteSelection(),
+    });
+  };
   window._ctxA=(a,id)=>{
     if     (a==="rename")        {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
     else if(a==="renamefolder")  {state.renamingFolderId=id;state.renamingFolderVal=state.folders.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();setTimeout(()=>{const el=document.getElementById("renameFolderInput");if(el){el.focus();el.select();}},50);}
@@ -1129,11 +1502,17 @@ function render(){
     else if(a==="movefolder")  {state.moveModal={itemId:id,itemType:"folder"};state.contextMenu=null;render();}
   };
   window._moveTo=(targetId)=>{
-    const {itemId,itemType}=state.moveModal;
-    if(itemType==="file")   moveFileTo(itemId, targetId);
-    else                    moveFolderTo(itemId, targetId==="__root__"?null:targetId);
+    const {itemId,itemType,multi}=state.moveModal;
+    const target=targetId==="__root__"?null:targetId;
+    if(multi)                    moveSelection(target);
+    else if(itemType==="file")   moveFileTo(itemId, targetId);
+    else                         moveFolderTo(itemId, target);
   };
   window._closeMoveModal=()=>{state.moveModal=null;render();};
+  window._undo=()=>undoMove(-1);
+  window._redo=()=>undoMove(1);
+  window._help=()=>{state.helpOpen=true;render();};
+  window._helpClose=()=>{state.helpOpen=false;render();};
   window._cfYes=()=>{const cb=state.confirmDialog?.onConfirm;state.confirmDialog=null;render();if(cb)cb();};
   window._cfNo =()=>{state.confirmDialog=null;render();};
   window._export2=exportBackup;
@@ -1165,6 +1544,7 @@ function render(){
     handleTextChange();
   };
   window._kd=(e)=>{
+    if(handleTypography(e))return;   // “ ” 와 … 자동 변환
     if((e.ctrlKey||e.metaKey)&&e.key==="b"){e.preventDefault();applyFormat("bold");}
     if((e.ctrlKey||e.metaKey)&&e.key==="i"){e.preventDefault();applyFormat("italic");}
     if((e.ctrlKey||e.metaKey)&&e.key==="u"){e.preventDefault();applyFormat("underline");}
@@ -1183,18 +1563,25 @@ function render(){
 // 포커스가 body 에 있는 대부분의 순간에 브라우저 기본 동작(예: Ctrl+H
 // 방문기록)이 대신 실행된다. 이 셋은 window 레벨에서 한 번만 등록한다.
 window.addEventListener("keydown",(e)=>{
+  if(e.key==="F1"){e.preventDefault();state.helpOpen=true;render();return;}
   if(e.key==="Escape"){
-    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog&&!state.trashOpen)return;
+    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog&&!state.trashOpen&&!state.helpOpen&&!state.selected.length)return;
     const st=document.getElementById("editor")?.scrollTop||0;
     // 확인 모달이 떠 있으면 그것만 닫는다. 뒤에 있는 휴지통까지 같이 닫히면 안 된다.
     if(state.confirmDialog){state.confirmDialog=null;render();return;}
-    state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.trashOpen=false;render();
+    if(state.helpOpen){state.helpOpen=false;render();return;}
+    state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.trashOpen=false;
+    state.selected=[];state.selAnchor=null;render();
     const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
     return;
   }
   if(!(e.ctrlKey||e.metaKey))return;
   if(!state.authed)return;
   const k=e.key.toLowerCase();
+  // 되돌리기는 우리 이력을 쓴다. 브라우저 기본 동작이 같이 돌면 두 이력이
+  // 엇갈려 내용이 뒤죽박죽된다.
+  if(k==="z"){e.preventDefault();e.shiftKey?undoMove(1):undoMove(-1);return;}
+  if(k==="y"){e.preventDefault();undoMove(1);return;}
   if(k==="h"||k==="f"){
     if(!state.activeTab)return;
     e.preventDefault();
