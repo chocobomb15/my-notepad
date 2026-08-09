@@ -307,6 +307,64 @@ function setCaret(el,offset){
   r.selectNodeContents(el);r.collapse(false);
   const s=window.getSelection();s.removeAllRanges();s.addRange(r);
 }
+
+// ─── 찾기 결과 표시 ───────────
+// 글자 수 기준 위치로 Range 를 만든다 (setCaret 과 같은 방식, 범위 버전).
+function rangeFromOffsets(el,start,end){
+  const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+  let n,acc=0,sn=null,so=0,en=null,eo=0;
+  while(n=walker.nextNode()){
+    const len=n.textContent.length;
+    if(sn===null&&acc+len>=start){sn=n;so=Math.max(0,Math.min(len,start-acc));}
+    if(en===null&&acc+len>=end){en=n;eo=Math.max(0,Math.min(len,end-acc));}
+    if(sn&&en)break;
+    acc+=len;
+  }
+  if(!sn)return null;
+  if(!en){en=sn;eo=so;}
+  const r=document.createRange();
+  r.setStart(sn,so);r.setEnd(en,eo);
+  return r;
+}
+function setEditorRange(el,start,end){
+  const r=rangeFromOffsets(el,start,end);if(!r)return false;
+  const s=window.getSelection();s.removeAllRanges();s.addRange(r);
+  return true;
+}
+
+// 찾기 입력창으로 포커스를 되돌리면 window.Selection 이 즉시 지워진다
+// (input 에 포커스가 가는 순간 브라우저가 에디터의 선택을 비운다).
+// 그래서 실제 선택에 기대지 않고 좌표만 계산해 별도 표시를 그린다.
+let findMatchStart=null,findMatchEnd=null,findHLLayer=null;
+function clearFindHighlight(){
+  if(findHLLayer){findHLLayer.remove();findHLLayer=null;}
+}
+function drawFindHighlight(ed,range){
+  clearFindHighlight();
+  const rects=range.getClientRects();
+  if(!rects.length)return;
+  const t=T();
+  const layer=document.createElement("div");
+  layer.style.cssText="position:fixed;inset:0;pointer-events:none;z-index:50;";
+  for(const r of rects){
+    const box=document.createElement("div");
+    box.style.cssText=`position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;background:${t.ac}55;border-radius:2px;`;
+    layer.appendChild(box);
+  }
+  document.body.appendChild(layer);
+  findHLLayer=layer;
+}
+// 찾기 창을 닫을 때 마지막으로 찾은 자리에 실제 커서를 심는다.
+// render() 가 body.innerHTML 을 통째로 새로 쓰므로 스크롤도 함께 복원해야 한다.
+function landCaretAtLastMatch(fallbackScrollTop){
+  clearFindHighlight();
+  const ed=document.getElementById("editor");
+  if(!ed)return;
+  ed.scrollTop=fallbackScrollTop;
+  if(findMatchStart!=null&&findMatchEnd!=null&&setEditorRange(ed,findMatchStart,findMatchEnd)){
+    ed.focus();
+  }
+}
 // 커서 앞의 글자 n개 (자동 변환 판단용)
 function charsBeforeCaret(n){
   const ed=document.getElementById("editor");
@@ -462,13 +520,14 @@ function handleFind(dir){
     matches.push(idx);i=idx+1;
   }
   const countEl=document.getElementById("findCount");
-  if(!matches.length){if(countEl)countEl.textContent="없음";state.findIndex=-1;return;}
+  if(!matches.length){if(countEl)countEl.textContent="없음";state.findIndex=-1;findMatchStart=null;findMatchEnd=null;clearFindHighlight();return;}
   if(direction==='down'){
     state.findIndex=state.findIndex===-1?0:(state.findIndex+1)%matches.length;
   } else {
     state.findIndex=state.findIndex===-1?matches.length-1:(state.findIndex-1+matches.length)%matches.length;
   }
   const ms=matches[state.findIndex],me=ms+state.findText.length;
+  findMatchStart=ms;findMatchEnd=me;
   let sn=null,so=0,en=null,eo=0;
   for(let i=0;i<nodes.length;i++){
     const s=offsets[i],e=s+nodes[i].textContent.length;
@@ -476,17 +535,20 @@ function handleFind(dir){
     if(!en&&me>=s&&me<=e){en=nodes[i];eo=me-s;}
   }
   if(sn&&en){
+    const nodeEl=sn.parentElement;
+    if(nodeEl){
+      const relTop=nodeEl.getBoundingClientRect().top-ed.getBoundingClientRect().top+ed.scrollTop;
+      ed.scrollTop=relTop-ed.clientHeight/2;
+    }
+    // 위치를 옮긴 뒤(스크롤 반영 후) 좌표를 재서 표시를 그린다.
+    // 찾기 입력창으로 포커스가 돌아가면 window.Selection 은 바로 지워지므로
+    // 그 값에 기대지 않는다.
     const range=document.createRange();
     range.setStart(sn,so);range.setEnd(en,eo);
-    window.getSelection().removeAllRanges();
-    window.getSelection().addRange(range);
-    const edEl=document.getElementById("editor");
-    const nodeEl=sn.parentElement;
-    if(edEl&&nodeEl){
-      const relTop=nodeEl.getBoundingClientRect().top-edEl.getBoundingClientRect().top+edEl.scrollTop;
-      edEl.scrollTop=relTop-edEl.clientHeight/2;
-    }
+    drawFindHighlight(ed,range);
     setTimeout(()=>document.getElementById("findInput")?.focus(),0);
+  } else {
+    findMatchStart=null;findMatchEnd=null;
   }
   if(countEl) countEl.textContent=`${state.findIndex+1} / ${matches.length}`;
 }
@@ -1511,7 +1573,14 @@ function render(){
     else if(a==="wrap")          {state.wordWrap=!state.wordWrap;render();}
     else if(a==="zm-")           {state.zoom=Math.max(state.zoom-10,50);render();}
     else if(a==="zm+")           {state.zoom=Math.min(state.zoom+10,200);render();}
-    else if(a==="find")          {const st=document.getElementById("editor")?.scrollTop||0;state.findOpen=!state.findOpen;render();if(state.findOpen)setTimeout(()=>document.getElementById("findInput")?.focus(),50);else{const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;}}
+    else if(a==="find")          {
+      const st=document.getElementById("editor")?.scrollTop||0;
+      const opening=!state.findOpen;
+      if(opening){findMatchStart=null;findMatchEnd=null;}   // 지난 검색의 낡은 위치가 재사용되지 않게
+      state.findOpen=opening;render();
+      if(opening)setTimeout(()=>document.getElementById("findInput")?.focus(),50);
+      else landCaretAtLastMatch(st);
+    }
     else if(a==="find_exec")     handleFind();
     else if(a==="replace_exec")  handleReplace();
     else if(a==="newfolder")     {state.newFolderMode=true;state.newFolderParentId=null;render();}
@@ -1560,7 +1629,14 @@ function render(){
   window._export=exportFile;
   window._cvtMd=convertToMd;
   window._refresh=refreshData;
-  window._fi=(v,w)=>{if(w==="find"){if(v!==state.findText)state.findIndex=-1;state.findText=v;}else state.replaceText=v;};
+  window._fi=(v,w)=>{
+    if(w==="find"){
+      // 검색어가 바뀌면 이전 검색에서 찾았던 위치는 더 이상 이 글자와 무관하다.
+      // 놔두면 Enter 없이 바로 닫았을 때 엉뚱한 곳에 커서가 꽂힌다.
+      if(v!==state.findText){state.findIndex=-1;findMatchStart=null;findMatchEnd=null;clearFindHighlight();}
+      state.findText=v;
+    } else state.replaceText=v;
+  };
   window._nfi=(v)=>{state.newFolderName=v;};
   window._nfk=(e)=>{if(e.key==="Enter")newFolder(state.newFolderParentId);if(e.key==="Escape"){state.newFolderMode=false;state.newFolderName="";state.newFolderParentId=null;render();}};
   window._ri=(v)=>{state.renamingVal=v;};
@@ -1716,9 +1792,11 @@ window.addEventListener("keydown",(e)=>{
     if(state.confirmDialog){state.confirmDialog=null;render();return;}
     if(state.helpOpen){state.helpOpen=false;render();return;}
     if(state.globalOpen){state.globalOpen=false;render();return;}
+    const wasFindOpen=state.findOpen;
     state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.trashOpen=false;
     state.selected=[];state.selAnchor=null;render();
-    const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
+    if(wasFindOpen) landCaretAtLastMatch(st);
+    else{const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;}
     return;
   }
   if(!(e.ctrlKey||e.metaKey))return;
@@ -1734,9 +1812,11 @@ window.addEventListener("keydown",(e)=>{
     if(!state.activeTab)return;
     e.preventDefault();
     const st=document.getElementById("editor")?.scrollTop||0;
-    state.findOpen=!state.findOpen;render();
-    if(state.findOpen)setTimeout(()=>document.getElementById("findInput")?.focus(),50);
-    else{const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;}
+    const opening=!state.findOpen;
+    if(opening){findMatchStart=null;findMatchEnd=null;}
+    state.findOpen=opening;render();
+    if(opening)setTimeout(()=>document.getElementById("findInput")?.focus(),50);
+    else landCaretAtLastMatch(st);
   } else if(k==="="||k==="+"){e.preventDefault();state.zoom=Math.min(state.zoom+10,200);render();}
   else if(k==="-"){e.preventDefault();state.zoom=Math.max(state.zoom-10,50);render();}
 });
