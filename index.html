@@ -52,6 +52,7 @@ let state={
   trashFolders:[],trashFiles:[],trashOpen:false,exporting:false,
   selected:[],selAnchor:null,      // 다중 선택 ('file:id' / 'folder:id')
   helpOpen:false,
+  globalOpen:false,globalQuery:"",
 };
 
 // ─── 다중 선택 ────────────────
@@ -375,16 +376,25 @@ function updateUndoButtons(){
 // ─── 자동 글자 변환 ───────────
 // 쌍따옴표를 여는/닫는 모양으로 바꾸고, 마침표 세 개를 말줄임표로 바꾼다.
 // 여는 따옴표로 볼 자리: 줄 처음이거나 앞이 공백·여는 괄호인 경우.
-function smartQuote(){
+// 여는 자리인지 판단: 줄 처음이거나 앞이 공백·여는 괄호·여는 따옴표.
+// 작은따옴표는 don't 처럼 글자 뒤에 오면 닫는 모양(’)이 맞다. 실제로
+// 아포스트로피의 정식 문자가 ’ 이므로 같은 규칙으로 처리하면 된다.
+function isOpeningSpot(){
   const before=charsBeforeCaret(1);
-  return (!before||/[\s(\[{「『“‘—–\-]/.test(before))?"“":"”";
+  return !before||/[\s(\[{「『“‘—–\-]/.test(before);
 }
 function handleTypography(e){
   if(e.isComposing)return false;      // 한글 조합 중에는 건드리지 않는다
   if(e.ctrlKey||e.metaKey||e.altKey)return false;
   if(e.key==='"'){
     e.preventDefault();
-    document.execCommand("insertText",false,smartQuote());
+    document.execCommand("insertText",false,isOpeningSpot()?"“":"”");
+    handleTextChange();
+    return true;
+  }
+  if(e.key==="'"){
+    e.preventDefault();
+    document.execCommand("insertText",false,isOpeningSpot()?"‘":"’");
     handleTextChange();
     return true;
   }
@@ -1013,6 +1023,110 @@ function renderConfirm(t,fontFamily){
   </div>`;
 }
 
+// ─── 전체 문서 검색 ───────────
+// 본문은 이미 전부 메모리에 있으므로 서버를 다시 부르지 않는다.
+// htmlToText 는 마크다운 변환까지 하느라 무거워서, 검색용으로는 태그만
+// 걷어내는 가벼운 변환을 쓰고 결과를 문서별로 캐시한다.
+const searchTextCache=new Map();   // fileId -> {len, text}
+function fileSearchText(f){
+  const raw=String(f.content||"");
+  const hit=searchTextCache.get(f.id);
+  if(hit&&hit.len===raw.length) return hit.text;
+  const text=raw
+    .replace(/<\/(div|p)>/gi,"\n")
+    .replace(/<br\s*\/?>/gi,"\n")
+    .replace(/<[^>]+>/g,"")
+    .replace(/&nbsp;/g," ").replace(/&amp;/g,"&")
+    .replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"');
+  searchTextCache.set(f.id,{len:raw.length,text});
+  return text;
+}
+
+function folderPathOf(folderId){
+  const parts=[];
+  let cur=state.folders.find(f=>f.id===folderId),guard=0;
+  while(cur&&guard++<20){parts.unshift(cur.name);cur=state.folders.find(f=>f.id===cur.parentId);}
+  return parts.join(" › ");
+}
+
+function globalSearch(q){
+  const needle=q.toLowerCase();
+  const out=[];
+  for(const f of state.files){
+    const text=fileSearchText(f);
+    const lower=text.toLowerCase();
+    let idx=lower.indexOf(needle);
+    if(idx<0) continue;
+    const pos=[];
+    while(idx>=0&&pos.length<500){pos.push(idx);idx=lower.indexOf(needle,idx+needle.length);}
+    out.push({file:f,text,pos});
+  }
+  // 많이 나온 문서를 위로
+  return out.sort((a,b)=>b.pos.length-a.pos.length);
+}
+
+// 결과만 다시 그린다. render() 를 부르면 입력칸이 새로 만들어져 포커스가 날아간다.
+function renderGlobalResults(){
+  const host=document.getElementById("gsResults");
+  if(!host)return;
+  const t=T();
+  const q=state.globalQuery.trim();
+  if(q.length<2){
+    host.innerHTML=`<div style="padding:26px 10px;text-align:center;color:${t.mt};font-size:12.5px;">두 글자 이상 입력하세요.</div>`;
+    return;
+  }
+  const hits=globalSearch(q);
+  const total=hits.reduce((n,h)=>n+h.pos.length,0);
+  if(!hits.length){
+    host.innerHTML=`<div style="padding:26px 10px;text-align:center;color:${t.mt};font-size:12.5px;">‘${esc(q)}’ 를 찾지 못했습니다.</div>`;
+    return;
+  }
+  const rows=hits.map(h=>{
+    const path=folderPathOf(h.file.folderId);
+    // 앞쪽 세 군데만 미리 보여준다
+    const snips=h.pos.slice(0,3).map(p=>{
+      const s=Math.max(0,p-32),e=Math.min(h.text.length,p+q.length+38);
+      const pre=esc(h.text.slice(s,p)).replace(/\n/g," ");
+      const mid=esc(h.text.slice(p,p+q.length));
+      const post=esc(h.text.slice(p+q.length,e)).replace(/\n/g," ");
+      return `<div style="font-size:11.5px;color:${t.mt};line-height:1.6;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+        ${s>0?"…":""}${pre}<mark style="background:${t.ac}44;color:${t.tx};border-radius:2px;padding:0 1px;">${mid}</mark>${post}${e<h.text.length?"…":""}
+      </div>`;
+    }).join("");
+    return `
+    <div onclick="window._gsGo('${h.file.id}')"
+      style="padding:10px 12px;border-bottom:1px solid ${t.bd};cursor:pointer;border-radius:6px;"
+      onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">
+      <div style="display:flex;align-items:baseline;gap:8px;">
+        <span style="font-size:13px;font-weight:600;color:${t.tx};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${esc(h.file.name)}</span>
+        <span style="font-size:10.5px;color:${t.ac};font-weight:700;flex-shrink:0;">${h.pos.length}</span>
+      </div>
+      <div style="font-size:10.5px;color:${t.mt};margin-top:2px;">${esc(path)}</div>
+      ${snips}
+    </div>`;
+  }).join("");
+  host.innerHTML=`<div style="padding:6px 12px;font-size:11px;color:${t.mt};">문서 ${hits.length}개 · 총 ${total.toLocaleString()}곳</div>${rows}`;
+}
+
+function renderGlobalSearch(t,fontFamily){
+  if(!state.globalOpen) return "";
+  return `
+  <div onclick="window._gsClose()" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:3100;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;">
+    <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;width:min(620px,calc(100% - 40px));max-height:76vh;display:flex;flex-direction:column;box-shadow:0 16px 40px rgba(0,0,0,0.4);font-family:${fontFamily};">
+      <div style="padding:16px 18px 12px;border-bottom:1px solid ${t.bd};">
+        <div style="font-size:14px;font-weight:700;color:${t.tx};margin-bottom:10px;">🔎 전체 문서에서 찾기</div>
+        <input id="gsInput" value="${esc(state.globalQuery)}" placeholder="찾을 낱말을 입력하세요"
+          oninput="window._gsInput(this.value)" onkeydown="window._gsKey(event)"
+          style="${inpC(t)};width:100%;box-sizing:border-box;font-size:14px;padding:9px 12px;"/>
+      </div>
+      <div id="gsResults" style="flex:1;overflow-y:auto;padding:4px 6px 10px;"></div>
+      <div style="padding:10px 18px;border-top:1px solid ${t.bd};font-size:11px;color:${t.mt};">
+        결과를 누르면 그 문서를 열고 해당 위치로 이동합니다. 휴지통은 검색하지 않습니다.
+      </div>
+    </div>
+  </div>`;
+}
+
 // ─── 도움말 ───────────────────
 function renderHelp(t,fontFamily){
   if(!state.helpOpen) return "";
@@ -1030,7 +1144,8 @@ function renderHelp(t,fontFamily){
       </table>
       ${head("찾기 · 보기")}
       <table style="width:100%;font-size:12px;border-collapse:collapse;">
-        ${row("Ctrl+H / Ctrl+F","찾기·바꾸기")}
+        ${row("Ctrl+H / Ctrl+F","이 문서에서 찾기·바꾸기")}
+        ${row("Ctrl+Shift+F","전체 문서에서 찾기")}
         ${row("Ctrl+＋ / Ctrl+－","글자 크게 / 작게")}
         ${row("Esc","창 닫기 · 선택 해제")}
         ${row("F1","이 도움말")}
@@ -1045,6 +1160,7 @@ function renderHelp(t,fontFamily){
       ${head("자동 변환")}
       <table style="width:100%;font-size:12px;border-collapse:collapse;">
         ${row("\"","여는·닫는 쌍따옴표(“ ”)로 자동 변환")}
+        ${row("'","여는·닫는 작은따옴표(‘ ’)로 자동 변환")}
         ${row("...","말줄임표(…)로 자동 변환")}
       </table>
       <button onclick="window._helpClose()" style="${btnC(t)};width:100%;margin-top:18px;padding:9px;text-align:center;">닫기</button>
@@ -1212,7 +1328,8 @@ function render(){
       <select onchange="window._setFont(this.value)" style="${inpC(t)};cursor:pointer;padding:3px 6px;">
         ${Object.entries(FONT_LABELS).map(([k,v])=>`<option value="${k}"${state.font===k?" selected":""}>${v}</option>`).join("")}
       </select>
-      <button onclick="window._btn('find')" title="찾기/바꾸기 (Ctrl+H)" style="${btnC(t)}">🔍</button>
+      <button onclick="window._btn('find')" title="이 문서에서 찾기/바꾸기 (Ctrl+H)" style="${btnC(t)}">🔍</button>
+      <button onclick="window._gsOpen()" title="전체 문서에서 찾기 (Ctrl+Shift+F)" style="${btnC(t)}">🔎</button>
       <button onclick="window._btn('wrap')" style="${btnC(t)};background:${state.wordWrap?t.ac:"transparent"};color:${state.wordWrap?"#fff":t.mt};">↩</button>
       <button onclick="window._btn('zm-')" style="${btnC(t)}">－</button>
       <span style="font-size:11px;color:${t.mt};min-width:36px;text-align:center;">${state.zoom}%</span>
@@ -1366,6 +1483,9 @@ function render(){
     <!-- 휴지통 -->
     ${renderTrash(t,fontFamily)}
 
+    <!-- 전체 문서 검색 -->
+    ${renderGlobalSearch(t,fontFamily)}
+
     <!-- 도움말 -->
     ${renderHelp(t,fontFamily)}
 
@@ -1379,6 +1499,7 @@ function render(){
   updateUndoButtons();
   if(state.authed) saveSession();
   updateStatusBar(true);setSaveIndicator();
+  if(state.globalOpen){renderGlobalResults();setTimeout(()=>{const el=document.getElementById("gsInput");if(el){el.focus();el.select();}},50);}
   if(state.renamingId) setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
   if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
   setTimeout(initSortables,0);
@@ -1511,6 +1632,30 @@ function render(){
   window._closeMoveModal=()=>{state.moveModal=null;render();};
   window._undo=()=>undoMove(-1);
   window._redo=()=>undoMove(1);
+  window._gsOpen=()=>{state.globalOpen=true;render();};
+  window._gsClose=()=>{state.globalOpen=false;render();};
+  // 입력 중에는 render() 를 부르지 않는다. 입력칸이 새로 만들어져 커서가 날아간다.
+  let gsTimer=null;
+  window._gsInput=(v)=>{
+    state.globalQuery=v;
+    clearTimeout(gsTimer);
+    gsTimer=setTimeout(renderGlobalResults,180);
+  };
+  window._gsKey=(e)=>{
+    if(e.key==="Enter"){clearTimeout(gsTimer);renderGlobalResults();}
+    if(e.key==="Escape"){state.globalOpen=false;render();}
+  };
+  // 결과를 누르면 그 문서를 열고, 기존 찾기 기능으로 해당 위치까지 데려간다.
+  window._gsGo=(fileId)=>{
+    const f=state.files.find(x=>x.id===fileId);if(!f)return;
+    const q=state.globalQuery.trim();
+    state.globalOpen=false;
+    openFile(f);
+    if(!q)return;
+    state.findText=q;state.findIndex=-1;state.findOpen=true;
+    render();
+    setTimeout(()=>handleFind("down"),60);
+  };
   window._help=()=>{state.helpOpen=true;render();};
   window._helpClose=()=>{state.helpOpen=false;render();};
   window._cfYes=()=>{const cb=state.confirmDialog?.onConfirm;state.confirmDialog=null;render();if(cb)cb();};
@@ -1565,11 +1710,12 @@ function render(){
 window.addEventListener("keydown",(e)=>{
   if(e.key==="F1"){e.preventDefault();state.helpOpen=true;render();return;}
   if(e.key==="Escape"){
-    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog&&!state.trashOpen&&!state.helpOpen&&!state.selected.length)return;
+    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog&&!state.trashOpen&&!state.helpOpen&&!state.globalOpen&&!state.selected.length)return;
     const st=document.getElementById("editor")?.scrollTop||0;
     // 확인 모달이 떠 있으면 그것만 닫는다. 뒤에 있는 휴지통까지 같이 닫히면 안 된다.
     if(state.confirmDialog){state.confirmDialog=null;render();return;}
     if(state.helpOpen){state.helpOpen=false;render();return;}
+    if(state.globalOpen){state.globalOpen=false;render();return;}
     state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.trashOpen=false;
     state.selected=[];state.selAnchor=null;render();
     const ed=document.getElementById("editor");if(ed)ed.scrollTop=st;
@@ -1582,6 +1728,8 @@ window.addEventListener("keydown",(e)=>{
   // 엇갈려 내용이 뒤죽박죽된다.
   if(k==="z"){e.preventDefault();e.shiftKey?undoMove(1):undoMove(-1);return;}
   if(k==="y"){e.preventDefault();undoMove(1);return;}
+  // Ctrl+Shift+F — 전체 문서에서 찾기 (열린 문서가 없어도 쓸 수 있다)
+  if(k==="f"&&e.shiftKey){e.preventDefault();state.globalOpen=true;render();return;}
   if(k==="h"||k==="f"){
     if(!state.activeTab)return;
     e.preventDefault();
