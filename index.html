@@ -188,6 +188,61 @@ function textToHTML(content){
     .split("\n").map(l=>`<div>${l||"<br>"}</div>`).join("");
 }
 function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p|u)\b/i.test(s);}
+
+// ─── 붙여넣기 서식 추려내기 ───
+// 워드·웹에서 복사한 HTML 을 그대로 넣으면 <span style> · <font> 같은 것이
+// 딸려와 문서가 크게 부풀고(문서당 1 MiB 상한), 이 앱의 변환기가 다루지
+// 못하는 태그가 섞인다. 이 원고가 지금까지 써온 여섯 가지
+// (b i u strike div br) 로만 추려서 넣는다.
+const PASTE_INLINE={B:"b",STRONG:"b",I:"i",EM:"i",U:"u",INS:"u",S:"strike",STRIKE:"strike",DEL:"strike"};
+const PASTE_BLOCK=/^(DIV|P|LI|TR|H[1-6]|BLOCKQUOTE|PRE|SECTION|ARTICLE|UL|OL|TABLE|TBODY|THEAD)$/;
+const PASTE_DROP="script,style,head,meta,link,noscript,img,svg,video,audio,iframe,object,embed,input,button,select,textarea";
+
+function sanitizePasteHTML(html){
+  const dom=new DOMParser().parseFromString(`<div id="r">${html}</div>`,"text/html");
+  const root=dom.getElementById("r");
+  if(!root) return null;
+  root.querySelectorAll(PASTE_DROP).forEach(n=>n.remove());
+
+  const lines=[];
+  let cur="";
+  const flush=()=>{lines.push(cur);cur="";};
+  const escT=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const wrap=(text,tags)=>{
+    if(!tags.length)return text;
+    const u=[...new Set(tags)];
+    return u.map(t=>`<${t}>`).join("")+text+u.slice().reverse().map(t=>`</${t}>`).join("");
+  };
+
+  (function walk(node,open){
+    for(const n of node.childNodes){
+      if(n.nodeType===3){
+        // HTML 원본의 줄바꿈·들여쓰기 공백은 의미가 없으므로 하나로 줄인다
+        const t=n.nodeValue.replace(/[\r\n\t]+/g," ").replace(/ {2,}/g," ");
+        if(t) cur+=wrap(escT(t),open);
+        continue;
+      }
+      if(n.nodeType!==1)continue;
+      const tag=n.tagName;
+      if(tag==="BR"){flush();continue;}
+      const inline=PASTE_INLINE[tag];
+      if(inline){walk(n,[...open,inline]);continue;}
+      if(PASTE_BLOCK.test(tag)){
+        if(cur.trim()!=="")flush(); else cur="";
+        walk(n,open);
+        if(cur.trim()!=="")flush(); else cur="";
+        continue;
+      }
+      walk(n,open);   // 모르는 태그는 벗겨내고 안쪽 내용만 살린다
+    }
+  })(root,[]);
+  if(cur.trim()!=="")flush();
+
+  while(lines.length&&!lines[0].trim())lines.shift();
+  while(lines.length&&!lines[lines.length-1].trim())lines.pop();
+  if(!lines.length) return null;
+  return lines.map(l=>`<div>${l||"<br>"}</div>`).join("");
+}
 function htmlToMarkdown(html){
   let md=html;
   md=md.replace(/<strong>([\s\S]*?)<\/strong>/gi,"**$1**");
@@ -1795,9 +1850,21 @@ function render(){
   window._changeColor=(id,color)=>changeFolderColor(id,color);
   window._paste=(e)=>{
     e.preventDefault();
-    const text=e.clipboardData.getData("text/plain");
-    const html=text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-      .split("\n").map(l=>`<div>${l||"<br>"}</div>`).join("");
+    const cb=e.clipboardData;
+    const text=cb.getData("text/plain");
+    // 서식이 있으면 살려서 넣고, 없거나 추려낼 게 없으면 글자만 넣는다.
+    let html=null;
+    try{ const raw=cb.getData("text/html"); if(raw) html=sanitizePasteHTML(raw); }catch(err){ html=null; }
+    if(!html){
+      html=text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+        .split("\n").map(l=>`<div>${l||"<br>"}</div>`).join("");
+    }
+    // 문서 하나가 1 MiB 를 넘으면 저장이 아예 안 된다. 넣기 전에 막는다.
+    const file=state.files.find(f=>f.id===state.activeTab);
+    if(file&&docBytes(file.content)+docBytes(html)>FS_DOC_LIMIT-8192){
+      toast("붙여넣으면 문서가 저장 한도(1 MiB)를 넘습니다. 문서를 나눠 주세요.","err");
+      return;
+    }
     document.execCommand("insertHTML",false,html);
     handleTextChange();
   };
