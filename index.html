@@ -205,8 +205,24 @@ function sanitizePasteHTML(html){
   root.querySelectorAll(PASTE_DROP).forEach(n=>n.remove());
 
   const lines=[];
-  let cur="";
-  const flush=()=>{lines.push(cur);cur="";};
+  let cur="",curTrailFromSource=false;
+  const flush=()=>{
+    // 줄 끝 공백이 소스 줄바꿈에서 온 것이면 버린다
+    lines.push(curTrailFromSource?cur.replace(/ +$/,""):cur);
+    cur="";curTrailFromSource=false;
+  };
+  // 워드·구글독스는 <b> 대신 <span style="font-weight:700"> 을 쓴다.
+  // 태그 이름만 보면 굵게가 통째로 사라지므로 style 도 함께 본다.
+  const inlineFromStyle=el=>{
+    const s=(el.getAttribute&&el.getAttribute("style")||"").toLowerCase();
+    if(!s)return [];
+    const tags=[];
+    if(/font-weight\s*:\s*(bold|[6-9]00)/.test(s))tags.push("b");
+    if(/font-style\s*:\s*italic/.test(s))tags.push("i");
+    if(/text-decoration[^;]*underline/.test(s))tags.push("u");
+    if(/text-decoration[^;]*line-through/.test(s))tags.push("strike");
+    return tags;
+  };
   const escT=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   const wrap=(text,tags)=>{
     if(!tags.length)return text;
@@ -217,9 +233,18 @@ function sanitizePasteHTML(html){
   (function walk(node,open){
     for(const n of node.childNodes){
       if(n.nodeType===3){
-        // HTML 원본의 줄바꿈·들여쓰기 공백은 의미가 없으므로 하나로 줄인다
-        const t=n.nodeValue.replace(/[\r\n\t]+/g," ").replace(/ {2,}/g," ");
-        if(t) cur+=wrap(escT(t),open);
+        const raw=n.nodeValue;
+        // 태그 사이에 낀 줄바꿈·들여쓰기는 HTML 소스를 보기 좋게 만든 것일 뿐
+        // 내용이 아니다. 그대로 두면 붙여넣은 줄 맨 앞에 공백이 생긴다.
+        if(raw.trim()===""&&/[\r\n\t]/.test(raw)) continue;
+        let t=raw.replace(/[\r\n\t]+/g," ");
+        // 줄 맨 앞인데 소스 줄바꿈에서 온 공백이면 버린다.
+        // (사용자가 직접 넣은 들여쓰기는 줄바꿈이 아니라 공백으로 시작하므로 남는다)
+        const atLineStart=cur.replace(/<[^>]*>/g,"")==="";
+        if(atLineStart&&/^[\r\n\t]/.test(raw)) t=t.replace(/^ +/,"");
+        // 연속 공백은 줄이지 않는다. 이 에디터는 white-space:pre-wrap 이라
+        // Tab 으로 넣은 들여쓰기처럼 공백 개수가 그대로 화면에 보인다.
+        if(t){ cur+=wrap(escT(t),open); curTrailFromSource=/[\r\n\t][ ]*$/.test(raw); }
         continue;
       }
       if(n.nodeType!==1)continue;
@@ -233,7 +258,7 @@ function sanitizePasteHTML(html){
         if(cur.trim()!=="")flush(); else cur="";
         continue;
       }
-      walk(n,open);   // 모르는 태그는 벗겨내고 안쪽 내용만 살린다
+      walk(n,[...open,...inlineFromStyle(n)]);   // 모르는 태그는 벗기되 style 의 서식은 살린다
     }
   })(root,[]);
   if(cur.trim()!=="")flush();
