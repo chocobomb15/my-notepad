@@ -115,8 +115,21 @@ async function loadData(){
   const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
   const allFolders=fSnap.docs.map(d=>d.data());
   const allFiles  =fileSnap.docs.map(d=>d.data());
-  state.folders     =allFolders.filter(f=>!f.deletedAt).sort(byOrder);
-  state.files       =allFiles.filter(f=>!f.deletedAt).sort(byOrder);
+
+  // 아직 서버에 못 올린 편집분은 서버 내용으로 덮지 않는다.
+  // 덮으면 방금 친 글이 조용히 사라진다. 저장이 끝나면 자연히 풀린다.
+  const pending=new Set([...unsaved,...saveTimers.keys()]);
+  const localBefore=new Map(state.files.map(f=>[f.id,f]));   // 덮기 전에 잡아둔다
+  const serverIds=new Set(allFiles.map(f=>f.id));
+
+  state.folders=allFolders.filter(f=>!f.deletedAt).sort(byOrder);
+  const merged=allFiles.filter(f=>!f.deletedAt)
+    .map(f=>(pending.has(f.id)&&localBefore.get(f.id))||f);
+  // 서버에 아직 올라가지 않은(막 만든) 문서도 남긴다
+  for(const id of pending){
+    if(!serverIds.has(id)&&localBefore.has(id)) merged.push(localBefore.get(id));
+  }
+  state.files=merged.sort(byOrder);
   state.trashFolders=allFolders.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
   state.trashFiles  =allFiles.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
   if(state.folders.length===0&&state.trashFolders.length===0){
@@ -161,11 +174,57 @@ function restoreSession(){
   state.tabs=ids.map(id=>({fileId:id,folderId:state.files.find(f=>f.id===id).folderId}));
   state.activeTab=alive.has(s.activeTab)?s.activeTab:ids[ids.length-1];
 }
-async function refreshData(){
+// ─── 수동 동기화 ──────────────
+// 순서가 중요하다. 먼저 내 편집분을 올리고(push) 그다음 서버를 다시 읽는다(pull).
+// 반대로 하면 아직 안 올라간 글이 서버 내용에 덮여 사라진다.
+let syncing=false;
+async function manualSync(){
+  if(syncing)return;
+  if(!state.authed)return;
+  syncing=true;
   const btn=document.getElementById("refreshBtn");
   if(btn){btn.style.opacity="0.4";btn.style.pointerEvents="none";}
-  await loadData();
+  try{
+    commitEditor();                                   // 편집 중 내용을 state 에 반영
+    const mine=new Set([...unsaved,...saveTimers.keys()]);
+
+    // 내가 고친 문서를 다른 곳에서도 고쳤는지 먼저 확인한다.
+    // 그냥 올리면 저쪽 변경이 조용히 사라진다.
+    let clash=[];
+    if(mine.size){
+      const snap=await getDocs(filesCol());
+      const server=new Map(snap.docs.map(d=>[d.id,d.data()]));
+      clash=[...mine].filter(id=>{
+        const a=state.files.find(f=>f.id===id),b=server.get(id);
+        return a&&b&&b.updatedAt&&a.updatedAt&&b.updatedAt>a.updatedAt;
+      }).map(id=>state.files.find(f=>f.id===id));
+    }
+
+    if(clash.length){
+      const names=clash.map(f=>esc(f.name)).join(", ");
+      askConfirm({
+        title:"다른 곳에서 먼저 수정됨",
+        message:`<b>${names}</b><br>이 문서를 다른 기기(또는 다른 창)에서 더 나중에 고쳤습니다.`,
+        detail:"지금 올리면 그쪽 변경이 사라집니다. 그대로 올릴지 정해 주세요.<br>취소하면 아무것도 올리지 않고, 먼저 백업(💾)을 받아 두실 수 있습니다.",
+        okLabel:"내 것으로 덮어쓰기",
+        onConfirm:async()=>{ await flushAll(); await loadData(); toast("동기화했습니다","ok"); },
+      });
+      return;
+    }
+
+    await flushAll();                                 // 1) 올리기
+    if(saveError){toast("저장하지 못한 문서가 있습니다: "+saveError,"err");return;}
+    await loadData();                                 // 2) 내려받기
+    toast("동기화했습니다","ok");
+  }catch(e){
+    toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err");
+  }finally{
+    syncing=false;
+    const b=document.getElementById("refreshBtn");
+    if(b){b.style.opacity="1";b.style.pointerEvents="auto";}
+  }
 }
+const refreshData=manualSync;
 
 // ─── Auth ────────────────────
 async function tryLogin(){
@@ -332,7 +391,12 @@ async function flushFile(fileId){
   setSaveIndicator();
 }
 
-function flushAll(){return Promise.all([...saveTimers.keys()].map(id=>flushFile(id)));}
+// 저장이 한 번 실패하면 타이머는 이미 지워지고 unsaved 에만 남는다.
+// 타이머만 훑으면 그 내용은 영영 안 올라가므로 둘을 합쳐서 민다.
+function flushAll(){
+  const ids=new Set([...saveTimers.keys(),...unsaved]);
+  return Promise.all([...ids].map(id=>flushFile(id)));
+}
 
 // 삭제 직전에 예약된 저장을 버린다. 안 그러면 지운 문서가 다시 살아난다.
 function cancelSave(fileId){
@@ -1314,6 +1378,7 @@ function renderHelp(t,fontFamily){
       </table>
       ${head("찾기 · 보기")}
       <table style="width:100%;font-size:12px;border-collapse:collapse;">
+        ${row("Ctrl+S","지금 동기화 (올리고 받아오기)")}
         ${row("Ctrl+H / Ctrl+F","이 문서에서 찾기·바꾸기")}
         ${row("Ctrl+Shift+F","전체 문서에서 찾기")}
         ${row("Ctrl+＋ / Ctrl+－","글자 크게 / 작게")}
@@ -1505,7 +1570,7 @@ function render(){
       <span style="font-size:11px;color:${t.mt};min-width:36px;text-align:center;">${state.zoom}%</span>
       <button onclick="window._btn('zm+')" style="${btnC(t)}">＋</button>
       <button onclick="window._btn('dark')" style="${btnC(t)}">${state.dark?"☀️":"🌙"}</button>
-      <button id="refreshBtn" onclick="window._refresh()" title="최신 데이터 불러오기" style="${btnC(t)}">🔄</button>
+      <button id="refreshBtn" onclick="window._refresh()" title="지금 동기화 (Ctrl+S) — 내 편집분을 올리고 최신 내용을 받아옵니다" style="${btnC(t)};${unsaved.size?`border-color:${t.ac};color:${t.ac};`:""}">${unsaved.size?"🔄•":"🔄"}</button>
       <button onclick="window._trOpen()" title="휴지통${state.trashFiles.length?` (문서 ${state.trashFiles.length}개)`:""}" style="${btnC(t)};position:relative;">🗑${state.trashFiles.length?`<span style="position:absolute;top:-4px;right:-4px;background:${t.ac};color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;min-width:14px;">${state.trashFiles.length}</span>`:""}</button>
       <button onclick="window._export2()" title="전체 백업 내보내기 (JSON)" ${state.exporting?"disabled":""} style="${btnC(t)};${state.exporting?"opacity:0.4;":""}">${state.exporting?"⏳":"💾"}</button>
       <button onclick="window._btn('lock')" title="잠금" style="${btnC(t)};color:${t.mt};">🔒</button>
@@ -1935,6 +2000,8 @@ window.addEventListener("keydown",(e)=>{
   // 엇갈려 내용이 뒤죽박죽된다.
   if(k==="z"){e.preventDefault();e.shiftKey?undoMove(1):undoMove(-1);return;}
   if(k==="y"){e.preventDefault();undoMove(1);return;}
+  // Ctrl+S — 지금 동기화. 자동 저장이 이미 돌지만, 확실히 올리고 싶을 때를 위해 둔다.
+  if(k==="s"){e.preventDefault();manualSync();return;}
   // Ctrl+Shift+F — 전체 문서에서 찾기 (열린 문서가 없어도 쓸 수 있다)
   if(k==="f"&&e.shiftKey){e.preventDefault();state.globalOpen=true;render();return;}
   if(k==="h"||k==="f"){
