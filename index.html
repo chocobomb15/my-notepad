@@ -931,6 +931,64 @@ async function newFile(folderId){
   state.activeTab=f.id;state.renamingId=f.id;state.renamingVal="새 파일.md";
   await saveFile(f);render();
 }
+// 문서 복사본 만들기.
+// 원본 바로 아래에 넣고, 이름은 "원본 (사본)" · "원본 (사본 2)" 로 붙인다.
+async function duplicateFile(fileId){
+  const src=state.files.find(f=>f.id===fileId);
+  if(!src){toast("문서를 찾지 못했습니다","err");return;}
+
+  // 편집 중이던 내용이 아직 state 에 안 들어갔을 수 있다. 화면의 최신 내용으로 복사한다.
+  if(state.activeTab===fileId) commitEditor();
+  const latest=state.files.find(f=>f.id===fileId)||src;
+
+  // 복사본이 1 MiB 상한을 넘으면 저장이 통째로 실패한다. 만들기 전에 막는다.
+  if(docBytes(latest.content)>FS_DOC_LIMIT-8192){
+    toast("이 문서는 너무 커서 복사본을 저장할 수 없습니다","err");
+    return;
+  }
+
+  const base=String(latest.name||"제목 없음").replace(/\s*\(사본( \d+)?\)$/,"");
+  const taken=new Set(state.files.filter(f=>f.folderId===latest.folderId).map(f=>f.name));
+  let name=`${base} (사본)`;
+  for(let i=2;taken.has(name);i++) name=`${base} (사본 ${i})`;
+
+  // 순서를 다시 매긴다. 옛 문서는 order 가 없고 createdAt 으로 정렬되는데,
+  // 복사본에만 order 를 넣으면 기준이 뒤섞여 엉뚱한 자리에 놓인다.
+  // 이 폴더의 문서 전체에 0,1,2… 를 다시 부여하면서 원본 바로 뒤에 끼워 넣는다.
+  const sibs=state.files.filter(f=>f.folderId===latest.folderId).sort(byOrder);
+  const copy={...latest,id:genId(),name,createdAt:Date.now(),
+              updatedAt:Date.now(),deletedAt:null,deletedBatch:null};
+  // 원본 뒤에 이미 사본들이 붙어 있으면 그 마지막 뒤에 놓는다.
+  // 원본 바로 뒤에 끼우면 (사본 2) 가 (사본) 앞에 오게 된다.
+  const copyOf=new RegExp("^"+base.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\\s*\\(사본( \\d+)?\\)$");
+  let insertAfter=sibs.findIndex(f=>f.id===latest.id);
+  while(insertAfter+1<sibs.length&&copyOf.test(sibs[insertAfter+1].name||"")) insertAfter++;
+
+  const ordered=[];
+  sibs.forEach((f,i)=>{
+    ordered.push(f);
+    if(i===insertAfter) ordered.push(copy);
+  });
+  const renumbered=new Map();
+  ordered.forEach((f,i)=>{ if((f.order??null)!==i) renumbered.set(f.id,{...f,order:i}); });
+  const finalCopy=renumbered.get(copy.id)||copy;
+
+  const touched=[...renumbered.values()].filter(f=>f.id!==copy.id);
+  state.files=[
+    ...state.files.map(f=>renumbered.get(f.id)||f),
+    finalCopy,
+  ].sort(byOrder);
+  state.contextMenu=null;
+  render();
+
+  try{
+    await Promise.all([saveFile(finalCopy),...touched.map(f=>saveFile(f))]);
+    toast(`복사본을 만들었습니다 · ${name}`,"ok");
+  }catch(e){
+    toast("복사본 저장 실패: "+((e&&(e.code||e.message))||e),"err");
+  }
+}
+
 async function newFolder(parentId=null){
   const name=state.newFolderName.trim();
   if(!name){state.newFolderMode=false;state.newFolderName="";state.newFolderParentId=null;render();return;}
@@ -1694,6 +1752,7 @@ function render(){
              <div onclick="window._delSel()" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">🗑 한꺼번에 휴지통으로</div>`
         : state.contextMenu.type==="file"
           ?`<div onclick="window._ctxA('rename','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">이름 바꾸기</div>
+             <div onclick="window._ctxA('duplicate','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">복사본 만들기</div>
              <div onclick="window._ctxA('movefile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">다른 폴더로 이동</div>
              <div onclick="window._ctxA('delfile','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;color:#f87171;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">삭제</div>`
           :`<div onclick="window._ctxA('renamefolder','${state.contextMenu.id}')" style="padding:8px 16px;cursor:pointer;font-size:12px;" onmouseenter="this.style.background='${t.hv}'" onmouseleave="this.style.background='transparent'">이름 바꾸기</div>
@@ -1862,6 +1921,7 @@ function render(){
       });
     }
     else if(a==="newfile")     {newFile(id);state.contextMenu=null;}
+    else if(a==="duplicate")   {duplicateFile(id);}
     else if(a==="delfolder"){
       const folder=state.folders.find(x=>x.id===id);
       const allIds=getAllDescendantFolderIds(id);
