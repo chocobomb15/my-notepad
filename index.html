@@ -914,10 +914,23 @@ function scrollToActiveTab(){
     else tabBar.scrollLeft=elRight-tabBar.clientWidth;
   },60);
 }
+// 문서를 떠나기 직전의 스크롤 위치를 기억해 두고, 돌아오면 그 자리로 되돌린다.
+// 탭 바와 사이드바(그리고 전체 검색 결과)가 같은 코드를 쓰도록 함수로 묶었다.
+function rememberScroll(){
+  const ed=document.getElementById("editor");
+  if(ed&&state.activeTab) state.scrollPositions={...state.scrollPositions,[state.activeTab]:ed.scrollTop};
+}
+function restoreScroll(fileId){
+  const ed=document.getElementById("editor");
+  if(ed) ed.scrollTop=state.scrollPositions[fileId]||0;
+}
+
 function openFile(file){
+  rememberScroll();
   commitEditor();
   if(!state.tabs.find(t=>t.fileId===file.id)) state.tabs=[...state.tabs,{fileId:file.id,folderId:file.folderId}];
   state.activeTab=file.id;render();scrollToActiveTab();
+  restoreScroll(file.id);
 }
 function closeTab(fileId){
   state.tabs=state.tabs.filter(t=>t.fileId!==fileId);
@@ -1854,15 +1867,13 @@ function render(){
   };
   window._nf=newFile;
   window._at=(id)=>{
-    const ed=document.getElementById("editor");
-    if(ed&&state.activeTab) state.scrollPositions={...state.scrollPositions,[state.activeTab]:ed.scrollTop};
+    rememberScroll();
     commitEditor();
     const prevScroll=document.getElementById("tabBar")?.scrollLeft||0;
     state.activeTab=id;render();
     const tabBar=document.getElementById("tabBar");
-    if(tabBar) tabBar.scrollLeft=prevScroll;
-    const newEd=document.getElementById("editor");
-    if(newEd) newEd.scrollTop=state.scrollPositions[id]||0;
+    if(tabBar) tabBar.scrollLeft=prevScroll;   // 탭 바 가로 위치는 그대로 둔다
+    restoreScroll(id);
   };
   window._ct=(fileId)=>{commitEditor();closeTab(fileId);};
   window._tc=handleTextChange;
