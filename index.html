@@ -816,6 +816,10 @@ async function moveSelection(targetId){
       jobs.push(saveFile(next));moved++;
     }
   }
+  // order 만 바꾸고 배열 순서를 그대로 두면 둘이 어긋난다. 드래그 순서
+  // 변경이 그 어긋남을 그대로 밟으면 엉뚱한 문서가 옮겨진다.
+  state.files=state.files.slice().sort(byOrder);
+  state.folders=state.folders.slice().sort(byOrder);
   state.selected=[];state.selAnchor=null;state.moveModal=null;render();
   try{
     await Promise.all(jobs);
@@ -1119,57 +1123,89 @@ async function changeFolderColor(folderId, color){
 function initSortables(){
   if(!window.Sortable) return;
 
-  function syncTabsToFiles(folderId){
-    const ordered=state.files.filter(f=>f.folderId===folderId).sort((a,b)=>(a.order??a.createdAt)-(b.order??b.createdAt));
-    const ids=new Set(ordered.map(f=>f.id));
-    const others=state.tabs.filter(t=>!ids.has(t.fileId));
-    const mine=ordered.map(f=>state.tabs.find(t=>t.fileId===f.id)).filter(Boolean);
-    state.tabs=[...others,...mine];
+  // initSortables 는 render() 마다 setTimeout 으로 불린다. 렌더가 연달아
+  // 일어나면 같은 요소에 Sortable 이 두 번 붙어 드래그가 제멋대로 동작한다.
+  const once=(el,opts)=>{
+    if(!el||el.dataset.sortableInit)return;
+    el.dataset.sortableInit="1";
+    Sortable.create(el,opts);
+  };
+
+  // 화면은 order 기준으로 정렬해서 그린다(renderFolderTree). 드래그 처리도
+  // 같은 기준으로 정렬해야 evt.oldIndex/newIndex 가 같은 항목을 가리킨다.
+  // 정렬을 빼먹으면 엉뚱한 문서가 옮겨진다.
+  const filesOf  =fid=>state.files.filter(f=>f.folderId===fid).sort(byOrder);
+  const foldersOf=pid=>state.folders.filter(f=>(f.parentId||null)===(pid||null)).sort(byOrder);
+
+  async function applyReorder(list,evt,isFolder){
+    if(evt.oldIndex===evt.newIndex)return;
+    const arr=list.slice();
+    const [moved]=arr.splice(evt.oldIndex,1);
+    if(!moved){render();return;}          // 화면과 상태가 어긋난 상황 — 다시 그려 맞춘다
+    arr.splice(evt.newIndex,0,moved);
+
+    const changed=[];
+    arr.forEach((f,i)=>{ if((f.order??null)!==i) changed.push({...f,order:i}); });
+    if(!changed.length){render();return;}
+    const byId=new Map(changed.map(f=>[f.id,f]));
+
+    if(isFolder) state.folders=state.folders.map(f=>byId.get(f.id)||f).sort(byOrder);
+    else         state.files  =state.files.map(f=>byId.get(f.id)||f).sort(byOrder);
+
+    render();   // Sortable 이 만든 DOM 대신 상태 기준으로 다시 그린다
+    try{
+      await Promise.all(changed.map(f=>isFolder?saveFolder(f):saveFile(f)));
+    }catch(e){
+      toast("순서를 저장하지 못했습니다: "+((e&&(e.code||e.message))||e),"err");
+    }
   }
-  async function syncFilesToTabs(){
-    const tabFileIds=state.tabs.map(t=>t.fileId);
-    state.files=state.files.map(f=>{const idx=tabFileIds.indexOf(f.id);return idx!==-1?{...f,order:idx}:f;});
-    await Promise.all(state.files.filter(f=>tabFileIds.includes(f.id)).map(f=>saveFile(f)));
+
+  // 탭 순서를 문서 순서에 반영한다. 탭에는 여러 폴더의 문서가 섞일 수 있어서
+  // 통째로 번호를 매기면 다른 폴더의 순서까지 뒤엉킨다. 폴더별로 따로 매긴다.
+  async function applyTabReorder(evt){
+    if(evt.oldIndex===evt.newIndex)return;
+    const tabs=state.tabs.slice();
+    const [moved]=tabs.splice(evt.oldIndex,1);
+    if(!moved){render();return;}
+    tabs.splice(evt.newIndex,0,moved);
+    state.tabs=tabs;
+
+    const grouped=new Map();
+    for(const t of state.tabs){
+      const f=state.files.find(x=>x.id===t.fileId);
+      if(!f)continue;
+      if(!grouped.has(f.folderId))grouped.set(f.folderId,[]);
+      grouped.get(f.folderId).push(f);
+    }
+    const changed=[];
+    for(const [fid,inTabs] of grouped){
+      const shown=new Set(inTabs.map(f=>f.id));
+      const rest=state.files.filter(f=>f.folderId===fid&&!shown.has(f.id)).sort(byOrder);
+      [...inTabs,...rest].forEach((f,i)=>{ if((f.order??null)!==i) changed.push({...f,order:i}); });
+    }
+    if(changed.length){
+      const byId=new Map(changed.map(f=>[f.id,f]));
+      state.files=state.files.map(f=>byId.get(f.id)||f).sort(byOrder);
+    }
+    render();
+    try{ await Promise.all(changed.map(f=>saveFile(f))); }
+    catch(e){ toast("순서를 저장하지 못했습니다: "+((e&&(e.code||e.message))||e),"err"); }
   }
 
   function initFolder(folder){
-    const fl=document.getElementById(`fileList-${folder.id}`);
-    if(fl) Sortable.create(fl,{animation:150,handle:".drag-handle",onEnd:async(evt)=>{
-      const ff=state.files.filter(f=>f.folderId===folder.id);
-      const [m]=ff.splice(evt.oldIndex,1);ff.splice(evt.newIndex,0,m);
-      const upd=ff.map((f,i)=>({...f,order:i}));
-      state.files=state.files.map(f=>upd.find(u=>u.id===f.id)||f);
-      syncTabsToFiles(folder.id);
-      await Promise.all(upd.map(f=>saveFile(f)));
-      render();
-    }});
-    const sl=document.getElementById(`subList-${folder.id}`);
-    if(sl) Sortable.create(sl,{animation:150,handle:".drag-handle",onEnd:async(evt)=>{
-      const subs=state.folders.filter(f=>f.parentId===folder.id);
-      const [m]=subs.splice(evt.oldIndex,1);subs.splice(evt.newIndex,0,m);
-      const upd=subs.map((f,i)=>({...f,order:i}));
-      state.folders=state.folders.map(f=>upd.find(u=>u.id===f.id)||f);
-      await Promise.all(upd.map(f=>saveFolder(f)));
-    }});
-    state.folders.filter(f=>f.parentId===folder.id).forEach(sub=>initFolder(sub));
+    once(document.getElementById(`fileList-${folder.id}`),{animation:150,handle:".drag-handle",
+      onEnd:evt=>applyReorder(filesOf(folder.id),evt,false)});
+    once(document.getElementById(`subList-${folder.id}`),{animation:150,handle:".drag-handle",
+      onEnd:evt=>applyReorder(foldersOf(folder.id),evt,true)});
+    foldersOf(folder.id).forEach(initFolder);
   }
 
-  const root=document.getElementById("folderList-root");
-  if(root) Sortable.create(root,{animation:150,handle:".drag-handle",onEnd:async(evt)=>{
-    const roots=state.folders.filter(f=>!f.parentId);
-    const [m]=roots.splice(evt.oldIndex,1);roots.splice(evt.newIndex,0,m);
-    const upd=roots.map((f,i)=>({...f,order:i}));
-    state.folders=state.folders.map(f=>upd.find(u=>u.id===f.id)||f);
-    await Promise.all(upd.map(f=>saveFolder(f)));
-  }});
-  state.folders.filter(f=>!f.parentId).forEach(f=>initFolder(f));
+  once(document.getElementById("folderList-root"),{animation:150,handle:".drag-handle",
+    onEnd:evt=>applyReorder(foldersOf(null),evt,true)});
+  foldersOf(null).forEach(initFolder);
 
-  const tabBar=document.getElementById("tabBar");
-  if(tabBar) Sortable.create(tabBar,{animation:150,filter:".tab-close-btn",onEnd:async(evt)=>{
-    const [m]=state.tabs.splice(evt.oldIndex,1);state.tabs.splice(evt.newIndex,0,m);
-    await syncFilesToTabs();
-    render();
-  }});
+  once(document.getElementById("tabBar"),{animation:150,filter:".tab-close-btn",
+    onEnd:applyTabReorder});
 }
 
 // ─── Theme & CSS ─────────────
