@@ -1656,6 +1656,11 @@ function render(){
   const tabFiles  =state.tabs.map(tab=>state.files.find(f=>f.id===tab.fileId)).filter(Boolean);
   const isTxt     =activeFile?.name.toLowerCase().endsWith(".txt");
 
+  // render() 는 body 를 통째로 새로 만든다. 사이드바를 아래까지 내려 둔 채
+  // 문서를 옮기면 목록이 매번 맨 위로 튄다. 다시 그리기 직전 위치를 잡아
+  // 두었다가 그린 뒤 되돌린다.
+  const sidebarTop=document.getElementById("sidebarScroll")?.scrollTop||0;
+
   document.body.innerHTML=`
   <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden;font-family:${fontFamily};">
 
@@ -1700,7 +1705,7 @@ function render(){
               oninput="window._nfi(this.value)" onkeydown="window._nfk(event)" onblur="window._btn('confirmfolder')"
               style="${inpC(t)};width:100%;box-sizing:border-box;"/>
           </div>`:""}
-        <div style="flex:1;overflow-y:auto;">
+        <div id="sidebarScroll" style="flex:1;overflow-y:auto;">
           ${renderFolderTree(null,0)}
         </div>
       </div>`:""}
@@ -1835,6 +1840,9 @@ function render(){
     <!-- 확인 모달 -->
     ${renderConfirm(t,fontFamily)}
   </div>`;
+
+  const sbEl=document.getElementById("sidebarScroll");
+  if(sbEl&&sidebarTop) sbEl.scrollTop=sidebarTop;
 
   if(activeFile){const ed=document.getElementById("editor");if(ed)ed.innerHTML=textToHTML(activeFile.content);}
   // 문서를 처음 열면 되돌리기 이력의 출발점을 잡아둔다.
