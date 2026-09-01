@@ -186,36 +186,65 @@ async function manualSync(){
   if(btn){btn.style.opacity="0.4";btn.style.pointerEvents="none";}
   try{
     commitEditor();                                   // 편집 중 내용을 state 에 반영
-    const mine=new Set([...unsaved,...saveTimers.keys()]);
 
-    // 내가 고친 문서를 다른 곳에서도 고쳤는지 먼저 확인한다.
-    // 그냥 올리면 저쪽 변경이 조용히 사라진다.
-    let clash=[];
-    if(mine.size){
-      const snap=await getDocs(filesCol());
-      const server=new Map(snap.docs.map(d=>[d.id,d.data()]));
-      clash=[...mine].filter(id=>{
-        const a=state.files.find(f=>f.id===id),b=server.get(id);
-        return a&&b&&b.updatedAt&&a.updatedAt&&b.updatedAt>a.updatedAt;
-      }).map(id=>state.files.find(f=>f.id===id));
-    }
+    // 저장 대기열(unsaved)에만 기대면 안 된다. 자동 저장이 성공하면 대기열은
+    // 비워지고, 저장이 실패했거나 어떤 이유로든 대기열에서 빠진 문서는 서버와
+    // 달라도 영영 안 올라간다. 그래서 이 창의 내용을 서버와 통째로 대조해
+    // 다른 것을 전부 올린다. "이 창에서 만들고 고친 것 전부" 가 기준이다.
+    const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
+    const srvFiles  =new Map(fileSnap.docs.map(d=>[d.id,d.data()]));
+    const srvFolders=new Map(fSnap.docs.map(d=>[d.id,d.data()]));
+
+    const fileDiffers=(f,s)=>!s
+      ||(s.content||"")!==(f.content||"")
+      ||s.name!==f.name||s.folderId!==f.folderId
+      ||(s.order??null)!==(f.order??null)
+      ||(s.deletedAt??null)!==(f.deletedAt??null);
+    const folderDiffers=(f,s)=>!s
+      ||s.name!==f.name||(s.parentId||null)!==(f.parentId||null)
+      ||(s.order??null)!==(f.order??null)||s.color!==f.color
+      ||(s.deletedAt??null)!==(f.deletedAt??null);
+
+    const pushFiles  =state.files.filter(f=>fileDiffers(f,srvFiles.get(f.id)));
+    const pushFolders=state.folders.filter(f=>folderDiffers(f,srvFolders.get(f.id)));
+
+    // 내가 바꾼 문서를 다른 곳에서 더 나중에 바꿨으면 그냥 올리면 안 된다.
+    const clash=pushFiles.filter(f=>{
+      const s=srvFiles.get(f.id);
+      return s&&s.updatedAt&&f.updatedAt&&s.updatedAt>f.updatedAt;
+    });
+
+    const doPush=async()=>{
+      // 예약된 자동 저장은 취소한다. 여기서 확실히 올리므로 중복 쓰기가 된다.
+      pushFiles.forEach(f=>cancelSave(f.id));
+      await Promise.all([
+        ...pushFiles.map(f=>saveFile(f)),
+        ...pushFolders.map(f=>saveFolder(f)),
+      ]);
+      saveError=null;
+      await loadData();                               // 그다음 최신 내용을 받아온다
+      const parts=[];
+      if(pushFiles.length)   parts.push(`문서 ${pushFiles.length}개`);
+      if(pushFolders.length) parts.push(`폴더 ${pushFolders.length}개`);
+      toast(parts.length?`${parts.join(" · ")} 올리고 동기화했습니다`:"이미 최신 상태입니다","ok");
+    };
 
     if(clash.length){
-      const names=clash.map(f=>esc(f.name)).join(", ");
+      const names=clash.slice(0,5).map(f=>esc(f.name)).join(", ")+(clash.length>5?` 외 ${clash.length-5}개`:"");
       askConfirm({
         title:"다른 곳에서 먼저 수정됨",
         message:`<b>${names}</b><br>이 문서를 다른 기기(또는 다른 창)에서 더 나중에 고쳤습니다.`,
         detail:"지금 올리면 그쪽 변경이 사라집니다. 그대로 올릴지 정해 주세요.<br>취소하면 아무것도 올리지 않고, 먼저 백업(💾)을 받아 두실 수 있습니다.",
         okLabel:"내 것으로 덮어쓰기",
-        onConfirm:async()=>{ await flushAll(); await loadData(); toast("동기화했습니다","ok"); },
+        onConfirm:async()=>{
+          try{ await doPush(); }
+          catch(e){ toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err"); }
+        },
       });
       return;
     }
 
-    await flushAll();                                 // 1) 올리기
-    if(saveError){toast("저장하지 못한 문서가 있습니다: "+saveError,"err");return;}
-    await loadData();                                 // 2) 내려받기
-    toast("동기화했습니다","ok");
+    await doPush();
   }catch(e){
     toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err");
   }finally{
