@@ -53,6 +53,7 @@ let state={
   selected:[],selAnchor:null,      // 다중 선택 ('file:id' / 'folder:id')
   helpOpen:false,
   globalOpen:false,globalQuery:"",
+  syncClash:null,                  // 동기화 충돌 고르기 {files,server,picked,safe}
 };
 
 // ─── 다중 선택 ────────────────
@@ -214,37 +215,36 @@ async function manualSync(){
       return s&&s.updatedAt&&f.updatedAt&&s.updatedAt>f.updatedAt;
     });
 
-    const doPush=async()=>{
+    // 충돌한 문서와 아닌 문서를 나눈다. 충돌 하나 때문에 멀쩡한 나머지까지
+    // 못 올리면, 정작 안전하게 올릴 수 있던 글도 창을 닫는 순간 잃는다.
+    const clashIds=new Set(clash.map(f=>f.id));
+    const safeFiles=pushFiles.filter(f=>!clashIds.has(f.id));
+
+    const doPush=async(files,folders,quiet)=>{
       // 예약된 자동 저장은 취소한다. 여기서 확실히 올리므로 중복 쓰기가 된다.
-      pushFiles.forEach(f=>cancelSave(f.id));
+      files.forEach(f=>cancelSave(f.id));
       await Promise.all([
-        ...pushFiles.map(f=>saveFile(f)),
-        ...pushFolders.map(f=>saveFolder(f)),
+        ...files.map(f=>saveFile(f)),
+        ...(folders||[]).map(f=>saveFolder(f)),
       ]);
       saveError=null;
       await loadData();                               // 그다음 최신 내용을 받아온다
+      if(quiet)return;
       const parts=[];
-      if(pushFiles.length)   parts.push(`문서 ${pushFiles.length}개`);
-      if(pushFolders.length) parts.push(`폴더 ${pushFolders.length}개`);
+      if(files.length)             parts.push(`문서 ${files.length}개`);
+      if((folders||[]).length)     parts.push(`폴더 ${folders.length}개`);
       toast(parts.length?`${parts.join(" · ")} 올리고 동기화했습니다`:"이미 최신 상태입니다","ok");
     };
 
     if(clash.length){
-      const names=clash.slice(0,5).map(f=>esc(f.name)).join(", ")+(clash.length>5?` 외 ${clash.length-5}개`:"");
-      askConfirm({
-        title:"다른 곳에서 먼저 수정됨",
-        message:`<b>${names}</b><br>이 문서를 다른 기기(또는 다른 창)에서 더 나중에 고쳤습니다.`,
-        detail:"지금 올리면 그쪽 변경이 사라집니다. 그대로 올릴지 정해 주세요.<br>취소하면 아무것도 올리지 않고, 먼저 백업(💾)을 받아 두실 수 있습니다.",
-        okLabel:"내 것으로 덮어쓰기",
-        onConfirm:async()=>{
-          try{ await doPush(); }
-          catch(e){ toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err"); }
-        },
-      });
+      // 충돌 없는 것은 먼저 올려 둔다. 사용자가 고민하는 동안 잃지 않도록.
+      if(safeFiles.length||pushFolders.length) await doPush(safeFiles,pushFolders,true);
+      state.syncClash={files:clash,server:srvFiles,picked:new Set(clash.map(f=>f.id)),safe:safeFiles.length};
+      render();
       return;
     }
 
-    await doPush();
+    await doPush(pushFiles,pushFolders);
   }catch(e){
     toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err");
   }finally{
@@ -1494,6 +1494,60 @@ function renderGlobalSearch(t,fontFamily){
   </div>`;
 }
 
+// ─── 동기화 충돌 고르기 ───────
+// 충돌 하나 때문에 전부 막으면, 정작 안전하게 올릴 수 있던 글까지 잃는다.
+// 충돌한 문서만 따로 모아 하나씩 고르게 한다.
+function renderSyncClash(t,fontFamily){
+  const sc=state.syncClash;
+  if(!sc) return "";
+  const when=ts=>{ if(!ts)return "시각 모름"; const d=new Date(ts);
+    return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
+
+  const rows=sc.files.map(f=>{
+    const s=sc.server.get(f.id)||{};
+    const mineLen=htmlToText(f.content||"").length;
+    const srvLen =htmlToText(s.content||"").length;
+    const on=sc.picked.has(f.id);
+    return `
+    <label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-bottom:1px solid ${t.bd};cursor:pointer;">
+      <input type="checkbox" ${on?"checked":""} onchange="window._scToggle('${f.id}')"
+        style="margin-top:3px;width:15px;height:15px;accent-color:${t.ac};cursor:pointer;flex-shrink:0;"/>
+      <span style="flex:1;min-width:0;">
+        <span style="display:block;font-size:13px;font-weight:600;color:${t.tx};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${esc(f.name)}</span>
+        <span style="display:block;font-size:11px;color:${t.mt};margin-top:3px;line-height:1.6;">
+          내 것 ${mineLen.toLocaleString()}자 · ${when(f.updatedAt)}<br>
+          <span style="color:#fbbf24;">서버 ${srvLen.toLocaleString()}자 · ${when(s.updatedAt)} (더 나중)</span>
+        </span>
+      </span>
+    </label>`;
+  }).join("");
+
+  const n=sc.picked.size;
+  return `
+  <div onclick="window._scClose()" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:3300;display:flex;align-items:center;justify-content:center;">
+    <div onclick="event.stopPropagation()" style="background:${t.sb};border:1px solid ${t.bd};border-radius:12px;width:min(540px,calc(100% - 40px));max-height:78vh;display:flex;flex-direction:column;box-shadow:0 16px 40px rgba(0,0,0,0.4);font-family:${fontFamily};">
+      <div style="padding:18px 20px 12px;border-bottom:1px solid ${t.bd};">
+        <div style="font-size:15px;font-weight:700;color:${t.tx};">다른 곳에서 먼저 수정됨</div>
+        <div style="font-size:11.5px;color:${t.mt};margin-top:6px;line-height:1.7;">
+          아래 문서는 다른 기기(또는 다른 창)에서 <b>더 나중에</b> 고쳤습니다.<br>
+          체크한 것만 <b>내 것으로 덮어씁니다.</b> 체크를 풀면 서버 것을 그대로 두고 받아옵니다.
+          ${sc.safe?`<br><span style="color:#34d399;">충돌하지 않은 문서 ${sc.safe}개는 이미 올렸습니다.</span>`:""}
+        </div>
+      </div>
+      <div style="flex:1;overflow-y:auto;">${rows}</div>
+      <div style="padding:12px 20px;border-top:1px solid ${t.bd};display:flex;gap:8px;align-items:center;">
+        <button onclick="window._scAll(true)" style="${btnC(t)};font-size:11.5px;padding:5px 10px;">모두 선택</button>
+        <button onclick="window._scAll(false)" style="${btnC(t)};font-size:11.5px;padding:5px 10px;">모두 해제</button>
+        <div style="flex:1"></div>
+        <button onclick="window._scClose()" style="${btnC(t)};padding:8px 14px;">취소</button>
+        <button onclick="window._scApply()" style="background:${t.ac};color:#fff;border:1px solid ${t.ac};border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">
+          ${n?`${n}개 덮어쓰기`:"덮어쓰지 않고 받아오기"}
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ─── 도움말 ───────────────────
 function renderHelp(t,fontFamily){
   if(!state.helpOpen) return "";
@@ -1860,6 +1914,9 @@ function render(){
     <!-- 전체 문서 검색 -->
     ${renderGlobalSearch(t,fontFamily)}
 
+    <!-- 동기화 충돌 고르기 -->
+    ${renderSyncClash(t,fontFamily)}
+
     <!-- 도움말 -->
     ${renderHelp(t,fontFamily)}
 
@@ -2055,6 +2112,35 @@ function render(){
     render();
     setTimeout(()=>handleFind("down"),60);
   };
+  window._scToggle=(id)=>{
+    const sc=state.syncClash;if(!sc)return;
+    sc.picked.has(id)?sc.picked.delete(id):sc.picked.add(id);
+    render();
+  };
+  window._scAll=(on)=>{
+    const sc=state.syncClash;if(!sc)return;
+    sc.picked=on?new Set(sc.files.map(f=>f.id)):new Set();
+    render();
+  };
+  window._scClose=()=>{state.syncClash=null;render();};
+  window._scApply=async()=>{
+    const sc=state.syncClash;if(!sc)return;
+    const chosen=sc.files.filter(f=>sc.picked.has(f.id));
+    state.syncClash=null;render();
+    try{
+      // 고른 것만 내 내용으로 덮는다. 고르지 않은 것은 건드리지 않고,
+      // 이어지는 loadData 가 서버 내용을 받아온다.
+      chosen.forEach(f=>cancelSave(f.id));
+      if(chosen.length) await Promise.all(chosen.map(f=>saveFile(f)));
+      // 덮어쓰지 않기로 한 문서는 로컬 편집분을 버려야 서버 것이 들어온다.
+      sc.files.filter(f=>!sc.picked.has(f.id)).forEach(f=>cancelSave(f.id));
+      saveError=null;
+      await loadData();
+      toast(chosen.length?`${chosen.length}개를 내 것으로 덮어썼습니다`:"서버 내용을 받아왔습니다","ok");
+    }catch(e){
+      toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err");
+    }
+  };
   window._help=()=>{state.helpOpen=true;render();};
   window._helpClose=()=>{state.helpOpen=false;render();};
   window._cfYes=()=>{const cb=state.confirmDialog?.onConfirm;state.confirmDialog=null;render();if(cb)cb();};
@@ -2121,11 +2207,12 @@ function render(){
 window.addEventListener("keydown",(e)=>{
   if(e.key==="F1"){e.preventDefault();state.helpOpen=true;render();return;}
   if(e.key==="Escape"){
-    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog&&!state.trashOpen&&!state.helpOpen&&!state.globalOpen&&!state.selected.length)return;
+    if(!state.contextMenu&&!state.findOpen&&!state.moveModal&&!state.confirmDialog&&!state.trashOpen&&!state.helpOpen&&!state.globalOpen&&!state.syncClash&&!state.selected.length)return;
     const st=document.getElementById("editor")?.scrollTop||0;
     // 확인 모달이 떠 있으면 그것만 닫는다. 뒤에 있는 휴지통까지 같이 닫히면 안 된다.
     if(state.confirmDialog){state.confirmDialog=null;render();return;}
     if(state.helpOpen){state.helpOpen=false;render();return;}
+    if(state.syncClash){state.syncClash=null;render();return;}
     if(state.globalOpen){state.globalOpen=false;render();return;}
     const wasFindOpen=state.findOpen;
     state.contextMenu=null;state.findOpen=false;state.moveModal=null;state.trashOpen=false;
