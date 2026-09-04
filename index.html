@@ -275,7 +275,7 @@ function textToHTML(content){
   return content.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
     .split("\n").map(l=>`<div>${l||"<br>"}</div>`).join("");
 }
-function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p|u)\b/i.test(s);}
+function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p|u|span|mark)\b/i.test(s);}
 
 // ─── 붙여넣기 서식 추려내기 ───
 // 워드·웹에서 복사한 HTML 을 그대로 넣으면 <span style> · <font> 같은 것이
@@ -285,6 +285,32 @@ function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p|u)\b/i.test(s);}
 const PASTE_INLINE={B:"b",STRONG:"b",I:"i",EM:"i",U:"u",INS:"u",S:"strike",STRIKE:"strike",DEL:"strike"};
 const PASTE_BLOCK=/^(DIV|P|LI|TR|H[1-6]|BLOCKQUOTE|PRE|SECTION|ARTICLE|UL|OL|TABLE|TBODY|THEAD)$/;
 const PASTE_DROP="script,style,head,meta,link,noscript,img,svg,video,audio,iframe,object,embed,input,button,select,textarea";
+
+// style 에서 형광펜으로 살릴 배경색을 읽는다.
+// 어두운 배경은 버린다. 다크 테마 웹페이지에서 복사하면 배경이 딸려오는데,
+// 이 에디터는 칠해진 글자를 검게 그리므로 검정 위 검정이 되어 안 보인다.
+function readHighlight(style){
+  const m=style.match(/background(?:-color)?\s*:\s*([^;]+)/);
+  if(!m)return null;
+  const v=m[1].trim();
+  if(!v||v==="transparent"||v==="initial"||v==="inherit"||v==="none")return null;
+  let r,g,b;
+  const rgb=v.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+))?/);
+  if(rgb){
+    [r,g,b]=[+rgb[1],+rgb[2],+rgb[3]];
+    if(rgb[4]!==undefined&&+rgb[4]<0.1)return null;        // 사실상 투명
+  }else{
+    const hex=v.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if(!hex)return null;                                    // 이름 색(yellow 등)은 다루지 않는다
+    const h=hex[1].length===3?hex[1].replace(/./g,c=>c+c):hex[1];
+    const n=parseInt(h,16);
+    [r,g,b]=[n>>16&255,n>>8&255,n&255];
+  }
+  const lum=(0.299*r+0.587*g+0.114*b)/255;
+  if(lum<0.6)return null;                                   // 어두운 배경은 형광펜이 아니다
+  if(lum>0.97)return null;                                  // 흰 배경은 칠한 게 아니다
+  return `rgb(${r}, ${g}, ${b})`;
+}
 
 function sanitizePasteHTML(html){
   const dom=new DOMParser().parseFromString(`<div id="r">${html}</div>`,"text/html");
@@ -309,13 +335,23 @@ function sanitizePasteHTML(html){
     if(/font-style\s*:\s*italic/.test(s))tags.push("i");
     if(/text-decoration[^;]*underline/.test(s))tags.push("u");
     if(/text-decoration[^;]*line-through/.test(s))tags.push("strike");
+    const hl=readHighlight(s);
+    if(hl)tags.push("hl:"+hl);
     return tags;
   };
   const escT=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const openTag=t=>t.startsWith("hl:")?`<span style="background-color: ${t.slice(3)};">`:`<${t}>`;
+  const closeTag=t=>t.startsWith("hl:")?"</span>":`</${t}>`;
   const wrap=(text,tags)=>{
     if(!tags.length)return text;
-    const u=[...new Set(tags)];
-    return u.map(t=>`<${t}>`).join("")+text+u.slice().reverse().map(t=>`</${t}>`).join("");
+    // 형광펜은 하나만 남긴다. 겹쳐 오면 안쪽(나중) 것이 실제로 보이는 색이다.
+    const seen=new Set(),u=[];
+    for(const t of tags){
+      const key=t.startsWith("hl:")?"hl":t;
+      if(seen.has(key)){ if(key==="hl") u[u.indexOf(u.find(x=>x.startsWith("hl:")))]=t; continue; }
+      seen.add(key);u.push(t);
+    }
+    return u.map(openTag).join("")+text+u.slice().reverse().map(closeTag).join("");
   };
 
   (function walk(node,open){
@@ -338,8 +374,10 @@ function sanitizePasteHTML(html){
       if(n.nodeType!==1)continue;
       const tag=n.tagName;
       if(tag==="BR"){flush();continue;}
+      // 굵게 위에 형광펜을 칠하면 브라우저가 <b style="background-color:..."> 를
+      // 만든다. 태그 이름만 보면 그 형광펜이 사라지므로 style 도 함께 읽는다.
       const inline=PASTE_INLINE[tag];
-      if(inline){walk(n,[...open,inline]);continue;}
+      if(inline){walk(n,[...open,inline,...inlineFromStyle(n)]);continue;}
       if(PASTE_BLOCK.test(tag)){
         if(cur.trim()!=="")flush(); else cur="";
         walk(n,open);
@@ -684,6 +722,49 @@ function applyFormat(type){
   document.execCommand(cmd,false,null);
   handleTextChange();
 }
+// ─── 형광펜 ───────────────────
+// 브라우저가 만드는 <span style="background-color:...">를 그대로 쓴다.
+// <mark> 로 줄여 저장하면 용량은 아끼지만, execCommand 가 <mark> 를 건드리지
+// 못해서 나중에 색을 바꾸거나 지울 수 없다(실험으로 확인). 편집이 되는 쪽을
+// 택했다. 표시 하나에 약 48바이트이므로 상한(1 MiB)에는 영향이 거의 없다.
+const HL_COLORS=[
+  {k:"y",name:"노랑",css:"#fff59d"},
+  {k:"g",name:"초록",css:"#c3f0c8"},
+  {k:"b",name:"파랑",css:"#c7e6ff"},
+  {k:"p",name:"분홍",css:"#ffd3e2"},
+];
+
+function applyHighlight(css){
+  const ed=document.getElementById("editor");if(!ed)return;
+  ed.focus();
+  const sel=window.getSelection();
+  if(!sel||!sel.rangeCount||sel.getRangeAt(0).collapsed){
+    toast("칠할 부분을 먼저 선택해 주세요","err");
+    return;
+  }
+  try{document.execCommand("styleWithCSS",false,true);}catch(e){}
+  document.execCommand("hiliteColor",false,css||"transparent");
+  try{document.execCommand("styleWithCSS",false,false);}catch(e){}
+  if(!css) cleanupHighlight(ed);
+  handleTextChange();
+}
+
+// 지우기 뒤에 남는 빈 껍데기를 치운다. 그대로 두면 문서가 조용히 부푼다.
+function cleanupHighlight(ed){
+  // [style*="background"] 만 보면 안 된다. 크롬은 지울 때 배경색 자체를 없애고
+  // style="" 라는 빈 껍데기만 남기는데, 그러면 이 선택자에 걸리지 않는다.
+  // 그대로 두면 칠했다 지울 때마다 문서가 조금씩 부푼다.
+  ed.querySelectorAll("[style]").forEach(el=>{
+    const bg=el.style.backgroundColor;
+    if(bg&&bg!=="transparent"&&bg!=="rgba(0, 0, 0, 0)")return;   // 살아있는 형광펜은 둔다
+    el.style.removeProperty("background-color");
+    if(!(el.getAttribute("style")||"").trim()) el.removeAttribute("style");
+    if(el.tagName==="SPAN"&&!el.attributes.length){
+      el.replaceWith(...el.childNodes);          // 아무것도 안 남은 span 은 벗긴다
+    }
+  });
+}
+
 function insertDateTime(){
   const ed=document.getElementById("editor");if(!ed)return;
   ed.focus();
@@ -1833,6 +1914,12 @@ function render(){
           <button onclick="window._fmt('underline')" title="밑줄 (Ctrl+U)"   style="${fmtC(t)};text-decoration:underline;color:${t.tx};">U</button>
           <button onclick="window._fmt('strike')"    title="취소선"           style="${fmtC(t)};text-decoration:line-through;color:${t.tx};"><s>S</s></button>
           <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
+          <span style="font-size:10px;color:${t.mt};margin-right:1px;">형광펜</span>
+          ${HL_COLORS.map(c=>`<button onclick="window._hl('${c.css}')" title="${c.name} 형광펜"
+            style="width:19px;height:19px;padding:0;border:1px solid ${t.bd};border-radius:4px;background:${c.css};cursor:pointer;flex-shrink:0;"></button>`).join("")}
+          <button onclick="window._hl('')" title="형광펜 지우기 (선택한 부분)"
+            style="${fmtC(t)};color:${t.mt};font-size:11px;">✕</button>
+          <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
           ${isTxt?`<button onclick="window._cvtMd('${activeFile.id}')" style="${cvtC(t)}">.txt → .md</button>`:""}
           <div style="flex:1;"></div>
           <button onclick="window._export('txt')" style="${fmtC(t)};font-size:10px;padding:2px 8px;">↓ .txt</button>
@@ -2005,6 +2092,7 @@ function render(){
   window._ct=(fileId)=>{commitEditor();closeTab(fileId);};
   window._tc=handleTextChange;
   window._fmt=applyFormat;
+  window._hl=applyHighlight;
   window._export=exportFile;
   window._cvtMd=convertToMd;
   window._refresh=refreshData;
@@ -2253,6 +2341,9 @@ render();
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px;}
 #editor::selection,#editor *::selection{background:#388bfd44;}
+/* 형광펜은 연한 파스텔이라, 다크모드의 흰 글자를 그대로 두면 읽을 수 없다.
+   칠해진 부분만 글자색을 어둡게 고정한다. 지우다 남은 transparent 는 제외. */
+#editor [style*="background-color"]:not([style*="transparent"]){color:#1a1a1a;}
 .drag-handle:active{cursor:grabbing;}
 .sortable-ghost{opacity:0.35;background:#58a6ff22;}
 .sortable-chosen{opacity:0.95;}
