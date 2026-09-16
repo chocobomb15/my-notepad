@@ -236,8 +236,7 @@ async function manualSync(){
   if(syncing)return;
   if(!state.authed)return;
   syncing=true;
-  const btn=document.getElementById("refreshBtn");
-  if(btn){btn.style.opacity="0.4";btn.style.pointerEvents="none";}
+  setSaveIndicator();                                 // 저장·🔄 버튼을 "… 저장" 으로 막는다
   try{
     commitEditor();                                   // 편집 중 내용을 state 에 반영
 
@@ -315,8 +314,7 @@ async function manualSync(){
     toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err");
   }finally{
     syncing=false;
-    const b=document.getElementById("refreshBtn");
-    if(b){b.style.opacity="1";b.style.pointerEvents="auto";}
+    setSaveIndicator();
   }
 }
 const refreshData=manualSync;
@@ -527,11 +525,30 @@ const unsaved=new Set();      // 아직 서버에 못 올린 fileId
 let   saveError=null;         // 마지막 저장 실패
 
 function setSaveIndicator(){
-  const si=document.getElementById("saveindicator");if(!si)return;
   const t=T();
-  if(saveError)      si.innerHTML=`<span style="color:#f87171;font-size:10px;" title="${esc(saveError)}">⚠ 저장 실패</span>`;
-  else if(unsaved.size) si.innerHTML=`<span style="color:${t.mt};font-size:10px;">저장 중...</span>`;
-  else               si.innerHTML=`<span style="color:#34d399;font-size:10px;">✓ 저장됨</span>`;
+  const si=document.getElementById("saveindicator");
+  if(si){
+    if(saveError)      si.innerHTML=`<span style="color:#f87171;font-size:10px;" title="${esc(saveError)}">⚠ 저장 실패</span>`;
+    else if(unsaved.size) si.innerHTML=`<span style="color:${t.mt};font-size:10px;">저장 중...</span>`;
+    else               si.innerHTML=`<span style="color:#34d399;font-size:10px;">✓ 저장됨</span>`;
+  }
+  // 휴대폰 폭에서는 위 글씨가 숨겨지므로 저장 버튼 자체가 같은 상태를 보여준다.
+  // 앞 기호만 바꿔 버튼 폭이 흔들리지 않게 한다(글자 칠 때마다 상단 바가 들썩이지 않도록).
+  const b=document.getElementById("saveBtn");
+  if(b){
+    let label="✓ 저장",fg="#34d399",bd=t.bd;
+    if(syncing)           {label="… 저장";fg=t.mt;}
+    else if(saveError)    {label="⚠ 저장";fg="#f87171";bd="#f87171";}
+    else if(unsaved.size) {label="● 저장";fg=t.ac;bd=t.ac;}
+    b.textContent=label;
+    b.style.color=fg;b.style.borderColor=bd;
+    b.style.minWidth="68px";
+    b.style.opacity=syncing?"0.6":"1";b.style.pointerEvents=syncing?"none":"auto";
+    b.title=saveError?`저장 실패: ${saveError} — 눌러서 다시 저장`:"저장 (Ctrl+S) — 내 편집분을 올리고 다른 기기의 최신 내용을 받아옵니다";
+  }
+  // 🔄 도 같은 동작이라, 동기화 중에는 함께 막는다. render() 가 새로 그려도 유지되도록 여기서 한다.
+  const r=document.getElementById("refreshBtn");
+  if(r){r.style.opacity=syncing?"0.4":"1";r.style.pointerEvents=syncing?"none":"auto";}
 }
 
 function scheduleSave(fileId){
@@ -1811,7 +1828,7 @@ function renderHelp(t,fontFamily){
       </table>
       ${head("찾기 · 보기")}
       <table style="width:100%;font-size:12px;border-collapse:collapse;">
-        ${row("Ctrl+S","지금 동기화 (올리고 받아오기)")}
+        ${row("Ctrl+S","저장·동기화 (올리고 받아오기) — 오른쪽 위 저장 버튼과 같음")}
         ${row("Ctrl+H / Ctrl+F","이 문서에서 찾기·바꾸기")}
         ${row("Ctrl+Shift+F","전체 문서에서 찾기")}
         ${row("Ctrl+＋ / Ctrl+－","글자 크게 / 작게")}
@@ -1986,12 +2003,20 @@ function render(){
   // 문서를 옮기면 목록이 매번 맨 위로 튄다. 다시 그리기 직전 위치를 잡아
   // 두었다가 그린 뒤 되돌린다.
   const sidebarTop=document.getElementById("sidebarScroll")?.scrollTop||0;
+  // 좌우로 밀어 둔 상단 바·서식 도구줄도 같다. 휴대폰에서 오른쪽 끝의 🌙 를 누르면
+  // 다시 그려지면서 맨 앞으로 튀어, 옆 버튼을 쓰려면 매번 다시 밀어야 했다.
+  const headerLeft=document.getElementById("headerBar")?.scrollLeft||0;
+  const fmtLeft   =document.getElementById("fmtBar")?.scrollLeft||0;
 
   document.body.innerHTML=`
   <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden;font-family:${fontFamily};">
 
     <!-- Header -->
-    <div style="display:flex;align-items:center;height:44px;background:${t.sb};border-bottom:1px solid ${t.bd};padding:0 12px;gap:8px;flex-shrink:0;">
+    <!-- 버튼이 많아 휴대폰 폭에 다 안 들어간다. 예전에는 넘치는 부분을 잘라내서
+         모바일에서 🔄·🗑·💾 등에 손이 닿지 않았다. 버튼 줄은 좌우로 밀 수 있게 하고,
+         저장 버튼만 그 밖 오른쪽 끝에 고정해 어떤 폭에서든 항상 보이게 한다. -->
+    <div style="display:flex;align-items:center;height:44px;background:${t.sb};border-bottom:1px solid ${t.bd};flex-shrink:0;">
+     <div id="headerBar" class="hscroll" style="flex:1;min-width:0;height:100%;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;box-sizing:border-box;">
       <button onclick="window._btn('sidebar')" style="${btnC(t)};padding:3px 7px;">${state.sidebarOpen?"◀":"▶"}</button>
       <span style="font-size:15px;font-weight:700;letter-spacing:2px;color:${t.ac};">✎ NOTEPAD</span>
       <button id="btnUndo" onclick="window._undo()" title="되돌리기 (Ctrl+Z)" style="${btnC(t)};padding:3px 8px;">↶</button>
@@ -2012,7 +2037,13 @@ function render(){
       <button onclick="window._trOpen()" title="휴지통${state.trashFiles.length?` (문서 ${state.trashFiles.length}개)`:""}" style="${btnC(t)};position:relative;">🗑${state.trashFiles.length?`<span style="position:absolute;top:-4px;right:-4px;background:${t.ac};color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;min-width:14px;">${state.trashFiles.length}</span>`:""}</button>
       <button onclick="window._export2()" title="전체 백업 내보내기 (JSON)" ${state.exporting?"disabled":""} style="${btnC(t)};${state.exporting?"opacity:0.4;":""}">${state.exporting?"⏳":"💾"}</button>
       <button onclick="window._btn('lock')" title="잠금" style="${btnC(t)};color:${t.mt};">🔒</button>
-      <span id="saveindicator" style="font-size:10px;min-width:52px;text-align:right;color:#34d399;">✓ 저장됨</span>
+     </div>
+     <div style="display:flex;align-items:center;gap:8px;height:100%;padding:0 10px 0 8px;border-left:1px solid ${t.bd};flex-shrink:0;">
+      <span id="saveindicator" class="save-ind" style="font-size:10px;min-width:52px;text-align:right;"></span>
+      <button id="saveBtn" onclick="window._refresh()" title="저장 (Ctrl+S) — 내 편집분을 올리고 다른 기기의 최신 내용을 받아옵니다"
+        style="font-family:inherit;font-size:13px;font-weight:700;padding:6px 12px;border-radius:6px;cursor:pointer;white-space:nowrap;
+          border:1px solid ${t.bd};background:transparent;color:${t.tx};">저장</button>
+     </div>
     </div>
 
     <div style="display:flex;flex:1;overflow:hidden;">
@@ -2073,7 +2104,7 @@ function render(){
 
         <!-- Formatting toolbar -->
         ${activeFile?`
-        <div style="display:flex;align-items:center;gap:5px;padding:5px 12px;background:${t.toolbar};border-bottom:1px solid ${t.bd};flex-shrink:0;">
+        <div id="fmtBar" class="hscroll" style="display:flex;align-items:center;gap:5px;padding:5px 12px;background:${t.toolbar};border-bottom:1px solid ${t.bd};flex-shrink:0;">
           <button onclick="window._fmt('bold')"      title="볼드 (Ctrl+B)"   style="${fmtC(t)};font-weight:700;color:${t.tx};"><b>B</b></button>
           <button onclick="window._fmt('italic')"    title="이탤릭 (Ctrl+I)" style="${fmtC(t)};font-style:italic;color:${t.tx};"><i>I</i></button>
           <button onclick="window._fmt('underline')" title="밑줄 (Ctrl+U)"   style="${fmtC(t)};text-decoration:underline;color:${t.tx};">U</button>
@@ -2137,7 +2168,7 @@ function render(){
             </div>`}
 
         <!-- Status bar -->
-        <div id="statusbar" style="display:flex;align-items:center;gap:16px;padding:3px 16px;background:${t.sb};border-top:1px solid ${t.bd};font-size:10px;color:${t.mt};flex-shrink:0;"></div>
+        <div id="statusbar" class="hscroll" style="display:flex;align-items:center;gap:16px;padding:3px 16px;background:${t.sb};border-top:1px solid ${t.bd};font-size:10px;color:${t.mt};flex-shrink:0;"></div>
       </div>
     </div>
 
@@ -2192,6 +2223,10 @@ function render(){
 
   const sbEl=document.getElementById("sidebarScroll");
   if(sbEl&&sidebarTop) sbEl.scrollTop=sidebarTop;
+  const hbEl=document.getElementById("headerBar");
+  if(hbEl&&headerLeft) hbEl.scrollLeft=headerLeft;
+  const fbEl=document.getElementById("fmtBar");
+  if(fbEl&&fmtLeft) fbEl.scrollLeft=fmtLeft;
 
   if(activeFile){const ed=document.getElementById("editor");if(ed)ed.innerHTML=textToHTML(activeFile.content);}
   // 문서를 처음 열면 되돌리기 이력의 출발점을 잡아둔다.
@@ -2472,6 +2507,18 @@ function render(){
   };
 }
 
+// ─── 좌우로 미는 막대에서 마우스 휠 ───
+// 휴대폰은 손가락으로 밀면 되지만, 좁은 PC 창에서 마우스로는 가로로 밀 방법이 없다
+// (스크롤바는 높이를 먹어서 숨겼다). 세로 휠을 가로 이동으로 바꿔 준다.
+// 막대가 넘치지 않으면 아무것도 하지 않는다.
+window.addEventListener("wheel",(e)=>{
+  const bar=e.target.closest&&e.target.closest(".hscroll");
+  if(!bar||bar.scrollWidth<=bar.clientWidth)return;
+  if(Math.abs(e.deltaX)>=Math.abs(e.deltaY))return;      // 트랙패드 가로 밀기는 그대로 둔다
+  bar.scrollLeft+=e.deltaY;
+  e.preventDefault();
+},{passive:false});
+
 // ─── 전역 단축키 ──────────────
 // render() 는 매번 body.innerHTML 을 통째로 새로 쓰기 때문에, 그때마다
 // document.activeElement 가 body 로 리셋된다. 찾기·줌·모달 닫기처럼
@@ -2527,6 +2574,14 @@ render();
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px;}
 #editor::selection,#editor *::selection{background:#388bfd44;}
+/* 한 줄에 다 안 들어가는 막대(상단 바·서식 도구줄·상태줄). 넘치는 부분을 잘라내거나
+   항목을 억지로 줄이면(글씨가 세로로 찌그러짐) 휴대폰에서 버튼에 손이 닿지 않는다.
+   항목 크기는 그대로 두고 손가락으로 좌우로 밀게 한다. 스크롤바는 높이를 먹으므로 숨긴다. */
+.hscroll{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;}
+.hscroll::-webkit-scrollbar{display:none;}
+.hscroll>*{flex-shrink:0;white-space:nowrap;}
+/* 좁은 화면에서는 "✓ 저장됨" 글씨를 숨기고 저장 버튼 자체가 상태를 보여준다 */
+@media (max-width:600px){.save-ind{display:none;}}
 /* 형광펜은 연한 파스텔이라, 다크모드의 흰 글자를 그대로 두면 읽을 수 없다.
    칠해진 부분만 글자색을 어둡게 고정한다. 지우다 남은 transparent 는 제외. */
 #editor [style*="background-color"]:not([style*="transparent"]){color:#1a1a1a;}
