@@ -10,7 +10,9 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getFirestore, collection, doc, setDoc, getDocs, deleteDoc }
+// getDocs 는 일부러 가져오지 않는다. 서버에 못 닿으면 오류 없이 빈 결과를
+// 돌려주기 때문이다(아래 readAllFromServer 참고). 실수로 다시 쓰지 못하게 막아 둔다.
+import { getFirestore, collection, doc, setDoc, getDocsFromServer, deleteDoc }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -54,6 +56,7 @@ let state={
   helpOpen:false,
   globalOpen:false,globalQuery:"",
   syncClash:null,                  // 동기화 충돌 고르기 {files,server,picked,safe}
+  loadError:null,                  // 서버에서 받지 못했을 때의 오류 (받기 전까지 화면을 비우지 않는다)
 };
 
 // ─── 다중 선택 ────────────────
@@ -110,12 +113,67 @@ async function purgeFile(id)  {await deleteDoc(doc(filesCol(),id));}
 
 const byOrder=(a,b)=>(a.order??a.createdAt??0)-(b.order??b.createdAt??0);
 
-async function loadData(){
-  // orderBy("createdAt") 을 쓰면 그 필드가 없는 문서가 조용히 빠진다.
-  // 정렬은 어차피 아래에서 클라이언트가 다시 하므로 전량을 그냥 읽는다.
-  const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
+// ─── 서버에서 읽기 ────────────
+// getDocs 는 서버에 닿지 못하면 오류를 내지 않고 캐시를 돌려준다. 이 앱은 캐시를
+// 따로 두지 않으므로 그 결과는 "문서 0개" 다. 실험으로 확인했다 — 네트워크를
+// 끊고 읽으면 오류 없이 0개, fromCache:true, 11ms 만에 "성공" 한다.
+// 절전에서 깨어난 직후나 와이파이가 바뀌는 순간 새로고침하면 이 빈 결과를 진짜로
+// 믿게 되고, 실제로 원고가 있는 데이터베이스에 기본 폴더("개인"·"업무")를 써넣은
+// 일이 있었다. 그래서 서버에서 받은 결과만 쓰고, 못 받으면 오류로 멈춘다.
+//
+// orderBy("createdAt") 은 쓰지 않는다. 그 필드가 없는 문서가 조용히 빠진다.
+// 정렬은 어차피 클라이언트가 다시 하므로 전량을 그냥 읽는다.
+async function readAllFromServer(){
+  const [fSnap,fileSnap]=await Promise.all([getDocsFromServer(foldersCol()),getDocsFromServer(filesCol())]);
+  return {fSnap,fileSnap};
+}
+
+// 처음 여는데 못 받았으면 조금 뒤 스스로 다시 시도한다. 절전에서 깨어난 직후처럼
+// 연결이 몇 초 늦게 붙는 경우가 대부분이라 대개 이것으로 풀린다.
+let loadRetries=0,loadRetryTimer=null,loadRetryPending=false;
+const nothingLoaded=()=>!state.folders.length&&!state.files.length&&!state.trashFolders.length&&!state.trashFiles.length;
+function scheduleLoadRetry(){
+  if(loadRetries>=3){loadRetryPending=false;return;}
+  clearTimeout(loadRetryTimer);
+  loadRetries++;
+  loadRetryPending=true;
+  loadRetryTimer=setTimeout(()=>{
+    loadRetryPending=false;
+    if(state.authed&&state.loadError&&nothingLoaded()) loadData();
+  },loadRetries*2500);
+}
+window.addEventListener("online",()=>{
+  if(state.authed&&state.loadError&&nothingLoaded()){loadRetries=0;loadData();}
+});
+
+async function loadData(opts={}){
+  const hadData=!nothingLoaded();
+  let fSnap,fileSnap;
+  try{
+    ({fSnap,fileSnap}=await readAllFromServer());
+  }catch(e){
+    // 못 받았으면 지금 화면과 상태를 그대로 둔다. 비우면 원고가 사라진 것처럼
+    // 보이고, 그 상태에서 동기화하면 옛 내용이 새 내용을 덮는다.
+    state.loadError=(e&&(e.code||e.message))||String(e);
+    console.error("불러오기 실패:",e);
+    if(hadData){
+      if(!opts.quiet) toast("서버에 연결하지 못해 최신 내용을 받지 못했습니다. 화면은 그대로 둡니다.","err");
+    }else{
+      scheduleLoadRetry();
+      render();
+    }
+    return false;
+  }
   const allFolders=fSnap.docs.map(d=>d.data());
   const allFiles  =fileSnap.docs.map(d=>d.data());
+
+  // 마지막 방어선. 서버가 통째로 비었다고 답했는데 이 창에는 내용이 있었다면
+  // 믿지 않는다. 삭제는 휴지통 표시만 남기므로 정상이라면 0개가 될 수 없다.
+  if(hadData&&!allFolders.length&&!allFiles.length){
+    if(!opts.quiet) toast("서버에서 문서를 하나도 받지 못했습니다. 화면은 그대로 둡니다. 잠시 뒤 다시 동기화해 주세요.","err");
+    return false;
+  }
+  state.loadError=null;loadRetries=0;clearTimeout(loadRetryTimer);loadRetryPending=false;
 
   // 아직 서버에 못 올린 편집분은 서버 내용으로 덮지 않는다.
   // 덮으면 방금 친 글이 조용히 사라진다. 저장이 끝나면 자연히 풀린다.
@@ -133,17 +191,12 @@ async function loadData(){
   state.files=merged.sort(byOrder);
   state.trashFolders=allFolders.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
   state.trashFiles  =allFiles.filter(f=>f.deletedAt).sort((a,b)=>b.deletedAt-a.deletedAt);
-  if(state.folders.length===0&&state.trashFolders.length===0){
-    const f1={id:genId(),name:"개인",color:COLORS[0],createdAt:Date.now(),order:0,parentId:null};
-    const f2={id:genId(),name:"업무",color:COLORS[1],createdAt:Date.now()+1,order:1,parentId:null};
-    const fi1={id:genId(),folderId:f1.id,name:"일기.md",content:"오늘의 일기를 작성해보세요...",createdAt:Date.now(),order:0};
-    const fi2={id:genId(),folderId:f2.id,name:"할일목록.md",content:"할일 목록을 작성해보세요.",createdAt:Date.now()+1,order:0};
-    await Promise.all([saveFolder(f1),saveFolder(f2),saveFile(fi1),saveFile(fi2)]);
-    state.folders=[f1,f2];state.files=[fi1,fi2];
-    state.openFolderIds=[f1.id];state.tabs=[{fileId:fi1.id,folderId:f1.id}];state.activeTab=fi1.id;
-  }
+  // 예전에는 폴더가 0개면 기본 폴더("개인"·"업무")와 예시 문서를 서버에 써넣었다.
+  // 연결이 불안정할 때 받은 빈 결과를 믿고 실제 원고가 있는 데이터베이스에 그것을
+  // 써넣은 원인이라 없앴다. 빈 데이터베이스라면 빈 화면에서 폴더를 만들면 된다.
   restoreSession();
   render();
+  return true;
 }
 
 // ─── 세션 복원 ────────────────
@@ -192,7 +245,18 @@ async function manualSync(){
     // 비워지고, 저장이 실패했거나 어떤 이유로든 대기열에서 빠진 문서는 서버와
     // 달라도 영영 안 올라간다. 그래서 이 창의 내용을 서버와 통째로 대조해
     // 다른 것을 전부 올린다. "이 창에서 만들고 고친 것 전부" 가 기준이다.
-    const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
+    //
+    // 이 대조는 반드시 서버에서 받은 결과로 해야 한다. 빈 결과를 믿으면 모든 문서가
+    // "서버에 없음" 으로 보여 전부 올라가고, 충돌 확인(서버 쪽이 더 최신인가)도
+    // 서버 문서가 없으니 건너뛰게 된다. 다른 기기에서 쓴 글이 이 창의 옛 내용에
+    // 조용히 덮인다. 못 받으면 여기서 멈추고 아무것도 올리지 않는다.
+    let fSnap,fileSnap;
+    try{
+      ({fSnap,fileSnap}=await readAllFromServer());
+    }catch(e){
+      toast("서버에 연결하지 못해 아무것도 올리지 않았습니다. 인터넷 연결을 확인한 뒤 다시 눌러 주세요.","err");
+      return;
+    }
     const srvFiles  =new Map(fileSnap.docs.map(d=>[d.id,d.data()]));
     const srvFolders=new Map(fSnap.docs.map(d=>[d.id,d.data()]));
 
@@ -221,18 +285,20 @@ async function manualSync(){
     const safeFiles=pushFiles.filter(f=>!clashIds.has(f.id));
 
     const doPush=async(files,folders,quiet)=>{
-      // 예약된 자동 저장은 취소한다. 여기서 확실히 올리므로 중복 쓰기가 된다.
-      files.forEach(f=>cancelSave(f.id));
       await Promise.all([
-        ...files.map(f=>saveFile(f)),
+        ...files.map(f=>pushFileNow(f)),
         ...(folders||[]).map(f=>saveFolder(f)),
       ]);
       saveError=null;
-      await loadData();                               // 그다음 최신 내용을 받아온다
-      if(quiet)return;
+      const pulled=await loadData({quiet:true});      // 그다음 최신 내용을 받아온다
       const parts=[];
       if(files.length)             parts.push(`문서 ${files.length}개`);
       if((folders||[]).length)     parts.push(`폴더 ${folders.length}개`);
+      if(!pulled){
+        toast((parts.length?`${parts.join(" · ")} 올렸지만, `:"")+"최신 내용을 받아오지 못했습니다. 잠시 뒤 다시 동기화해 주세요.","err");
+        return;
+      }
+      if(quiet)return;
       toast(parts.length?`${parts.join(" · ")} 올리고 동기화했습니다`:"이미 최신 상태입니다","ok");
     };
 
@@ -496,6 +562,21 @@ async function flushFile(fileId){
 function flushAll(){
   const ids=new Set([...saveTimers.keys(),...unsaved]);
   return Promise.all([...ids].map(id=>flushFile(id)));
+}
+
+// 지금 바로 올린다. 예약된 자동 저장은 중복 쓰기가 되므로 취소하되, 서버에 실제로
+// 올라가기 전까지는 unsaved 에 남겨 둔다. 먼저 비우면 연결이 끊겨 올리기가 멈춘
+// 사이 창을 닫아도 "저장 안 된 내용" 경고가 뜨지 않아 그 글을 잃는다.
+async function pushFileNow(f){
+  clearTimeout(saveTimers.get(f.id));saveTimers.delete(f.id);
+  unsaved.add(f.id);setSaveIndicator();
+  try{
+    await saveFile(f);
+    // 올리는 사이 새로 친 글이 있으면 그 저장이 따로 예약돼 있다. 그때는 남겨 둔다.
+    if(!saveTimers.has(f.id)) unsaved.delete(f.id);
+  }finally{
+    setSaveIndicator();
+  }
 }
 
 // 삭제 직전에 예약된 저장을 버린다. 안 그러면 지운 문서가 다시 살아난다.
@@ -1446,9 +1527,18 @@ async function exportBackup(){
   if(state.exporting) return;
   state.exporting=true;render();
   try{
-    const [fSnap,fileSnap]=await Promise.all([getDocs(foldersCol()),getDocs(filesCol())]);
+    // 서버에서 받은 것만 백업한다. 연결이 불안정할 때 빈 결과로 "백업 완료" 가
+    // 뜨면, 백업이 있다고 믿었는데 파일이 비어 있는 일이 생긴다.
+    const {fSnap,fileSnap}=await readAllFromServer();
     const folders=fSnap.docs.map(d=>({_docId:d.id,data:d.data()}));
     const files  =fileSnap.docs.map(d=>({_docId:d.id,data:d.data()}));
+    if(!folders.length&&!files.length){
+      state.exporting=false;render();
+      askConfirm({title:"백업하지 않음",message:"받아온 폴더와 문서가 하나도 없어 백업 파일을 만들지 않았습니다.",
+        detail:"빈 파일을 백업으로 믿게 되는 일을 막기 위해서입니다. 잠시 뒤 다시 시도해 주세요.",
+        okLabel:"확인",noCancel:true,onConfirm:()=>{}});
+      return;
+    }
     const chars=files.reduce((n,f)=>n+String(f.data.content||"").length,0);
     const payload={
       tool:"notepad-backup",version:1,
@@ -1473,8 +1563,11 @@ async function exportBackup(){
       okLabel:"확인",tone:"ok",noCancel:true,onConfirm:()=>{}});
   }catch(e){
     state.exporting=false;render();
-    askConfirm({title:"백업 실패",message:"내보내는 중 오류가 발생했습니다.",
-      detail:esc(String(e&&(e.code||e.message)||e)),okLabel:"확인",noCancel:true,onConfirm:()=>{}});
+    const offline=e&&e.code==="unavailable";
+    askConfirm({title:"백업 실패",
+      message:offline?"서버에 연결하지 못해 백업 파일을 만들지 않았습니다.":"내보내는 중 오류가 발생했습니다.",
+      detail:offline?"인터넷 연결을 확인한 뒤 다시 시도해 주세요.":esc(String(e&&(e.code||e.message)||e)),
+      okLabel:"확인",noCancel:true,onConfirm:()=>{}});
   }
 }
 
@@ -2029,6 +2122,14 @@ function render(){
                 white-space:${state.wordWrap?"pre-wrap":"pre"};
                 caret-color:${t.ac};cursor:text;box-sizing:border-box;"
             ></div>`
+          :state.loadError&&nothingLoaded()
+          ?`<div style="flex:1;display:flex;align-items:center;justify-content:center;color:${t.mt};flex-direction:column;gap:10px;text-align:center;padding:0 24px;">
+              <span style="font-size:34px;">⚠</span>
+              <span style="font-size:15px;font-weight:700;color:${t.tx};">서버에 연결하지 못했습니다</span>
+              <span style="font-size:12.5px;line-height:1.7;">연결 문제일 뿐, 원고가 지워진 것은 아닙니다.<br>인터넷 연결을 확인해 주세요. ${loadRetryPending?"잠시 뒤 자동으로 다시 시도합니다.":""}</span>
+              <button onclick="window._retryLoad()" style="margin-top:6px;background:${t.ac};color:#fff;border:1px solid ${t.ac};border-radius:6px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">다시 시도</button>
+              <span style="font-size:10.5px;opacity:0.6;">${esc(state.loadError)}</span>
+            </div>`
           :`<div style="flex:1;display:flex;align-items:center;justify-content:center;color:${t.mt};flex-direction:column;gap:12px;">
               <span style="font-size:40px;">✎</span>
               <span style="font-size:14px;">파일을 선택하거나 새로 만드세요</span>
@@ -2096,7 +2197,9 @@ function render(){
   // 문서를 처음 열면 되돌리기 이력의 출발점을 잡아둔다.
   if(activeFile&&!undoHist.has(activeFile.id)) undoInit(activeFile.id,textToHTML(activeFile.content));
   updateUndoButtons();
-  if(state.authed) saveSession();
+  // 서버에서 한 번이라도 제대로 받기 전에는 저장된 세션을 덮지 않는다.
+  // 첫 불러오기가 실패한 빈 화면이 열어 둔 탭 목록을 지워 버리기 때문이다.
+  if(state.authed&&sessionRestored) saveSession();
   updateStatusBar(true);setSaveIndicator();
   if(state.globalOpen){renderGlobalResults();setTimeout(()=>{const el=document.getElementById("gsInput");if(el){el.focus();el.select();}},50);}
   // 새 파일을 만들면 이름 입력칸에 자동으로 포커스를 준다. 그런데 이름을
@@ -2290,6 +2393,7 @@ function render(){
     render();
   };
   window._scClose=()=>{state.syncClash=null;render();};
+  window._retryLoad=()=>{loadRetries=0;clearTimeout(loadRetryTimer);loadRetryPending=false;loadData();};
   window._scApply=async()=>{
     const sc=state.syncClash;if(!sc)return;
     const chosen=sc.files.filter(f=>sc.picked.has(f.id));
@@ -2297,12 +2401,15 @@ function render(){
     try{
       // 고른 것만 내 내용으로 덮는다. 고르지 않은 것은 건드리지 않고,
       // 이어지는 loadData 가 서버 내용을 받아온다.
-      chosen.forEach(f=>cancelSave(f.id));
-      if(chosen.length) await Promise.all(chosen.map(f=>saveFile(f)));
+      if(chosen.length) await Promise.all(chosen.map(f=>pushFileNow(f)));
       // 덮어쓰지 않기로 한 문서는 로컬 편집분을 버려야 서버 것이 들어온다.
       sc.files.filter(f=>!sc.picked.has(f.id)).forEach(f=>cancelSave(f.id));
       saveError=null;
-      await loadData();
+      const pulled=await loadData({quiet:true});
+      if(!pulled){
+        toast((chosen.length?`${chosen.length}개는 덮어썼지만, `:"")+"서버 내용을 받아오지 못했습니다. 잠시 뒤 다시 동기화해 주세요.","err");
+        return;
+      }
       toast(chosen.length?`${chosen.length}개를 내 것으로 덮어썼습니다`:"서버 내용을 받아왔습니다","ok");
     }catch(e){
       toast("동기화 실패: "+((e&&(e.code||e.message))||e),"err");
