@@ -46,6 +46,8 @@ let state={
   contextMenu:null,
   newFolderMode:false,newFolderName:"",newFolderParentId:null,
   renamingId:null,renamingVal:"",
+  renameSrc:null,                  // 이름 입력칸을 어디에 낼지: "side"(탐색기) | "tab"(탭 바)
+  renameFresh:false,               // 방금 만든 새 문서인가 (이름을 통째로 갈아끼우기 좋게 선택해 준다)
   renamingFolderId:null,renamingFolderVal:"",
   saving:false,
   pwInput:"",pwError:false,sidebarOpen:true,
@@ -1225,7 +1227,10 @@ async function newFile(folderId){
   const maxO=state.files.filter(f=>f.folderId===folderId).reduce((m,f)=>Math.max(m,f.order??0),0);
   const f={id:genId(),folderId,name:"새 파일.md",content:"",createdAt:Date.now(),order:maxO+1};
   state.files=[...state.files,f];state.tabs=[...state.tabs,{fileId:f.id,folderId}];
+  // 만든 폴더를 펼쳐 둬야 탐색기에 새 문서가 보이고, 거기서 이름을 칠 수 있다.
+  if(!state.openFolderIds.includes(folderId)) state.openFolderIds=[...state.openFolderIds,folderId];
   state.activeTab=f.id;state.renamingId=f.id;state.renamingVal="새 파일.md";
+  state.renameSrc="side";state.renameFresh=true;
   await saveFile(f);render();
 }
 // 문서 복사본 만들기.
@@ -1295,10 +1300,24 @@ async function newFolder(parentId=null){
   state.folders=[...state.folders,f];state.newFolderMode=false;state.newFolderName="";state.newFolderParentId=null;
   await saveFolder(f);render();
 }
+// 이름 입력칸을 한 곳에만 낸다.
+// 예전에는 탐색기와 탭 바 양쪽에 동시에 냈다. 포커스는 늘 탭 바로 갔고, 탐색기
+// 쪽을 누르는 순간 탭 바 입력칸이 blur 되면서 이름 바꾸기가 끝나 입력칸이
+// 사라졌다. 그래서 탐색기에서는 글자를 고칠 수가 없었다.
+function renameSpot(){
+  if(!state.renamingId) return null;
+  if(state.renameSrc==="tab") return "tab";
+  // 탐색기가 닫혀 있거나 그 폴더가 접혀 있으면 탐색기에는 칸이 그려지지 않는다.
+  if(!state.sidebarOpen) return "tab";
+  const f=state.files.find(x=>x.id===state.renamingId);
+  if(f&&!state.openFolderIds.includes(f.folderId)) return "tab";
+  return "side";
+}
+
 async function commitRename(id){
   const val=state.renamingVal.trim();
   if(val){state.files=state.files.map(f=>f.id===id?{...f,name:val}:f);await saveFile(state.files.find(f=>f.id===id));}
-  state.renamingId=null;render();
+  state.renamingId=null;state.renameSrc=null;state.renameFresh=false;render();
 }
 async function commitFolderRename(id){
   const val=state.renamingFolderId===id?state.renamingFolderVal.trim():"";
@@ -1959,7 +1978,7 @@ function renderFolderTree(parentId,depth){
               onmouseleave="this.style.background='${bg}'">
               ${dh}
               <span style="font-size:11px;">📄</span>
-              ${state.renamingId===file.id
+              ${state.renamingId===file.id&&renameSpot()==="side"
                 ?`<input id="renameInput" value="${esc(state.renamingVal)}" onclick="event.stopPropagation()" oninput="window._ri(this.value)" onkeydown="window._rk(event,'${file.id}')" onblur="window._rc('${file.id}')" style="${inpC(t)};flex:1;font-size:11px;"/>`
                 :`<span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(file.name)}</span>`}
             </div>`;}).join("")}
@@ -2085,7 +2104,7 @@ function render(){
                     background:${state.activeTab===file.id?t.tabA:"transparent"};
                     font-size:12px;color:${state.activeTab===file.id?t.tx:t.mt};">
                   <span style="font-size:10px;">📄</span>
-                  ${state.renamingId===file.id
+                  ${state.renamingId===file.id&&renameSpot()==="tab"
                     ?`<input id="renameTabInput" value="${esc(state.renamingVal)}"
                         onclick="event.stopPropagation()"
                         oninput="window._ri(this.value)"
@@ -2244,8 +2263,26 @@ function render(){
   // 빼앗지 않는다.
   if(state.renamingId) setTimeout(()=>{
     if(document.activeElement===document.getElementById("editor"))return;
-    const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");
-    if(el){el.focus();el.select();}
+    const el=document.getElementById("renameInput")||document.getElementById("renameTabInput");
+    if(!el||document.activeElement===el)return;      // 이미 치고 있으면 커서를 건드리지 않는다
+    el.focus();
+    // 확장자(.md) 는 건드릴 일이 거의 없으므로 그 앞을 기준으로 잡는다.
+    const dot=el.value.lastIndexOf(".");
+    const base=dot>0?dot:el.value.length;
+    if(state.renameFresh){
+      // 방금 만든 문서는 "새 파일" 만 잡아 준다. 바로 치면 이름이 갈리고 .md 는 남는다.
+      el.setSelectionRange(0,base);
+    }else{
+      // 이름을 고치러 온 것이므로 전체를 선택하지 않는다. 선택해 두면 한 글자만
+      // 바꾸려 해도 이름이 통째로 지워진다. 커서를 .md 바로 앞에 둔다.
+      el.setSelectionRange(base,base);
+    }
+  },50);
+  // 폴더 이름도 같다. 다시 그려도 치던 자리를 잃지 않도록 여기서 함께 처리한다.
+  if(state.renamingFolderId) setTimeout(()=>{
+    const el=document.getElementById("renameFolderInput");
+    if(!el||document.activeElement===el)return;
+    el.focus();const n=el.value.length;el.setSelectionRange(n,n);
   },50);
   if(state.newFolderMode) setTimeout(()=>document.getElementById("newFolderInput")?.focus(),50);
   setTimeout(initSortables,0);
@@ -2324,10 +2361,12 @@ function render(){
   window._nfi=(v)=>{state.newFolderName=v;};
   window._nfk=(e)=>{if(e.key==="Enter")newFolder(state.newFolderParentId);if(e.key==="Escape"){state.newFolderMode=false;state.newFolderName="";state.newFolderParentId=null;render();}};
   window._ri=(v)=>{state.renamingVal=v;};
-  window._rk=(e,id)=>{if(e.key==="Enter")commitRename(id);if(e.key==="Escape"){state.renamingId=null;render();}};
+  window._rk=(e,id)=>{if(e.key==="Enter")commitRename(id);
+    if(e.key==="Escape"){state.renamingId=null;state.renameSrc=null;state.renameFresh=false;render();}};
   window._rc=(id)=>commitRename(id);
   window._startRename=(id)=>{
-    state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";render();
+    state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";
+    state.renameSrc="tab";state.renameFresh=false;render();
     setTimeout(()=>{const el=document.getElementById("renameTabInput")||document.getElementById("renameInput");if(el){el.focus();el.select();}},50);
   };
   window._cm=(e,type,id)=>{
@@ -2349,8 +2388,9 @@ function render(){
     });
   };
   window._ctxA=(a,id)=>{
-    if     (a==="rename")        {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
-    else if(a==="renamefolder")  {state.renamingFolderId=id;state.renamingFolderVal=state.folders.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();setTimeout(()=>{const el=document.getElementById("renameFolderInput");if(el){el.focus();el.select();}},50);}
+    if     (a==="rename")        {state.renamingId=id;state.renamingVal=state.files.find(f=>f.id===id)?.name||"";
+                                  state.renameSrc="side";state.renameFresh=false;state.contextMenu=null;render();}
+    else if(a==="renamefolder")  {state.renamingFolderId=id;state.renamingFolderVal=state.folders.find(f=>f.id===id)?.name||"";state.contextMenu=null;render();}
     else if(a==="delfile"){
       const f=state.files.find(x=>x.id===id);
       const chars=htmlToText(f?.content||"").length;
