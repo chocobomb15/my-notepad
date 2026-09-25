@@ -870,9 +870,13 @@ const HL_COLORS=[
 // 글자색. 밝은 배경과 어두운 배경 양쪽에서 읽혀야 하므로 중간 밝기로 골랐다
 // (흰 배경·다크 배경 모두 대비 4 안팎). 배경색에 따라 색을 바꾸면 저장된
 // 값과 화면이 어긋나므로, 한 벌로 양쪽을 견디는 색을 쓴다.
+//
+// 파랑만은 예외다. 중간 밝기 파랑(#2f7de1)은 흰 바탕에서 하늘색처럼 흐려 보여
+// 문서용 진한 파랑으로 바꿨다. 그 대신 다크모드에서는 검은 바탕에 묻히므로
+// CSS 로 밝은 파랑(dark)으로 "보이게만" 한다. 저장되는 값은 늘 css 쪽이다.
 const TEXT_COLORS=[
   {k:"r",name:"빨강",css:"#d93036"},
-  {k:"b",name:"파랑",css:"#2f7de1"},
+  {k:"b",name:"파랑",css:"#1d4ed8",dark:"#79a6ff"},
   {k:"g",name:"초록",css:"#1f9254"},
   {k:"p",name:"보라",css:"#8b5cf6"},
 ];
@@ -1995,6 +1999,8 @@ function render(){
   const t=T();
   const fontFamily=FONTS[state.font]||FONTS.nanum;
   document.body.style.cssText=`margin:0;padding:0;background:${t.bg};color:${t.tx};font-family:${fontFamily};overflow:hidden;height:100vh;`;
+  // 다크모드 전용 CSS(파랑 글자색을 밝게 보이기 등)가 걸 수 있도록 표시를 단다.
+  document.body.classList.toggle("theme-dark",!!state.dark);
 
   if(!state.authed){
     document.body.innerHTML=`
@@ -2132,7 +2138,7 @@ function render(){
           <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
           <span style="font-size:10px;color:${t.mt};margin-right:1px;">글자색</span>
           ${TEXT_COLORS.map(c=>`<button onclick="window._tcol('${c.css}')" title="${c.name} 글자색"
-            style="width:19px;height:19px;padding:0;border:1px solid ${t.bd};border-radius:4px;background:${t.tab};color:${c.css};font-weight:800;font-size:12px;line-height:1;cursor:pointer;flex-shrink:0;">가</button>`).join("")}
+            style="width:19px;height:19px;padding:0;border:1px solid ${t.bd};border-radius:4px;background:${t.tab};color:${state.dark&&c.dark?c.dark:c.css};font-weight:800;font-size:12px;line-height:1;cursor:pointer;flex-shrink:0;">가</button>`).join("")}
           <button onclick="window._tcol('')" title="글자색 되돌리기 (선택한 부분)"
             style="${fmtC(t)};color:${t.mt};font-size:11px;">✕</button>
           <div style="width:1px;height:18px;background:${t.bd};margin:0 4px;flex-shrink:0;"></div>
@@ -2166,7 +2172,7 @@ function render(){
           ?`<div id="editor" contenteditable="true"
               oninput="window._tc()" onkeydown="window._kd(event)" onpaste="window._paste(event)"
               spellcheck="false"
-              style="flex:1;background:${t.bg};color:${t.tx};border:none;outline:none;overflow-y:auto;
+              style="flex:1;background:${t.bg};color:${state.dark?t.tx:"#000000"};border:none;outline:none;overflow-y:auto;
                 padding:20px 28px;font-size:${Math.round(14*state.zoom/100)}px;line-height:1.85;
                 font-family:${fontFamily};word-break:${state.wordWrap?"break-word":"normal"};
                 overflow-wrap:${state.wordWrap?"break-word":"normal"};
@@ -2622,7 +2628,19 @@ render();
 @media (max-width:600px){.save-ind{display:none;}}
 /* 형광펜은 연한 파스텔이라, 다크모드의 흰 글자를 그대로 두면 읽을 수 없다.
    칠해진 부분만 글자색을 어둡게 고정한다. 지우다 남은 transparent 는 제외. */
-#editor [style*="background-color"]:not([style*="transparent"]){color:#1a1a1a;}
+#editor [style*="background-color"]:not([style*="transparent"]){color:#000000;}
+/* 파랑 글자색 (저장값 rgb(29, 78, 216) = #1d4ed8).
+   예전 파랑 rgb(47, 125, 225) 으로 칠해 둔 글자도 새 파랑으로 보이게 한다.
+   저장된 원고는 건드리지 않고 보이는 색만 바꾼다. */
+#editor [style*="color: rgb(47, 125, 225)"]{color:#1d4ed8 !important;}
+/* 다크모드: 진한 파랑은 검은 바탕에 묻히므로 밝은 파랑으로 보인다 */
+body.theme-dark #editor [style*="color: rgb(29, 78, 216)"],
+body.theme-dark #editor [style*="color: rgb(47, 125, 225)"]{color:#79a6ff !important;}
+/* 단, 형광펜 위(연한 바탕)에서는 진한 파랑 그대로가 읽기 좋다 */
+body.theme-dark #editor [style*="background-color"]:not([style*="transparent"])[style*="color: rgb(29, 78, 216)"],
+body.theme-dark #editor [style*="background-color"]:not([style*="transparent"])[style*="color: rgb(47, 125, 225)"],
+body.theme-dark #editor [style*="background-color"]:not([style*="transparent"]) [style*="color: rgb(29, 78, 216)"],
+body.theme-dark #editor [style*="background-color"]:not([style*="transparent"]) [style*="color: rgb(47, 125, 225)"]{color:#1d4ed8 !important;}
 .drag-handle:active{cursor:grabbing;}
 .sortable-ghost{opacity:0.35;background:#58a6ff22;}
 .sortable-chosen{opacity:0.95;}
