@@ -1250,6 +1250,26 @@ async function toggleMark(fileId){
   catch(e){ toast("중요 표시를 저장하지 못했습니다: "+((e&&(e.code||e.message))||e),"err"); }
 }
 
+// Ctrl+B 로 중요 표시. 탐색기에서 여러 문서를 골라 두었으면 그 문서들에,
+// 아니면 지금 열린 문서에 적용한다. 하나라도 꺼져 있으면 모두 켜고,
+// 모두 켜져 있으면 모두 끈다(탐색기의 여러 항목 토글과 같은 규칙).
+async function markByShortcut(){
+  const picked=state.selected.filter(k=>k.startsWith("file:")).map(k=>k.slice(5));
+  const ids=(picked.length?picked:[state.activeTab]).filter(id=>state.files.some(f=>f.id===id));
+  if(!ids.length){toast("중요 표시할 문서를 먼저 고르세요","err");return;}
+  if(state.activeTab&&ids.includes(state.activeTab)) commitEditor();
+  const on=ids.some(id=>!state.files.find(f=>f.id===id).marked);
+  const changed=ids.map(id=>({...state.files.find(f=>f.id===id),marked:on}));
+  const byId=new Map(changed.map(f=>[f.id,f]));
+  state.files=state.files.map(f=>byId.get(f.id)||f);
+  render();
+  const label=changed.length===1?changed[0].name:`문서 ${changed.length}개`;
+  // 탐색기가 닫혀 있으면 하이라이트가 안 보이므로 결과를 글로도 알린다.
+  toast(on?`중요 표시: ${label}`:`중요 표시 끔: ${label}`,"ok");
+  try{ await Promise.all(changed.map(f=>saveFile(f))); }
+  catch(e){ toast("중요 표시를 저장하지 못했습니다: "+((e&&(e.code||e.message))||e),"err"); }
+}
+
 // 문서 복사본 만들기.
 // 원본 바로 아래에 넣고, 이름은 "원본 (사본)" · "원본 (사본 2)" 로 붙인다.
 async function duplicateFile(fileId){
@@ -1865,6 +1885,7 @@ function renderHelp(t,fontFamily){
       ${head("찾기 · 보기")}
       <table style="width:100%;font-size:12px;border-collapse:collapse;">
         ${row("Ctrl+S","저장·동기화 (올리고 받아오기) — 오른쪽 위 저장 버튼과 같음")}
+        ${row("Ctrl+B","본문에서는 굵게 · 탐색기에서 문서를 누른 뒤에는 중요 표시 켜기/끄기")}
         ${row("Ctrl+H / Ctrl+F","이 문서에서 찾기·바꾸기")}
         ${row("Ctrl+Shift+F","전체 문서에서 찾기")}
         ${row("Ctrl+＋ / Ctrl+－","글자 크게 / 작게")}
@@ -2611,6 +2632,14 @@ window.addEventListener("keydown",(e)=>{
   if(k==="y"){e.preventDefault();undoMove(1);return;}
   // Ctrl+S — 지금 동기화. 자동 저장이 이미 돌지만, 확실히 올리고 싶을 때를 위해 둔다.
   if(k==="s"){e.preventDefault();manualSync();return;}
+  // Ctrl+B — 본문에 커서가 있으면 굵게(에디터의 _kd 가 처리한다).
+  // 본문 밖이면(탐색기에서 문서를 누른 직후 등) 중요 표시를 켜고 끈다.
+  // 입력칸(찾기·이름 바꾸기 등)에 있을 때는 아무것도 하지 않는다.
+  if((k==="b"||e.code==="KeyB")&&!e.shiftKey&&!e.altKey){
+    const a=document.activeElement;
+    if(a&&(a.id==="editor"||a.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))return;
+    e.preventDefault();markByShortcut();return;
+  }
   // Ctrl+Shift+F — 전체 문서에서 찾기 (열린 문서가 없어도 쓸 수 있다)
   if(k==="f"&&e.shiftKey){e.preventDefault();state.globalOpen=true;render();return;}
   if(k==="h"||k==="f"){
