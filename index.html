@@ -964,10 +964,9 @@ async function convertToMd(fileId){
 }
 
 // ─── Find / Replace ──────────
-function handleFind(dir){
-  const ed=document.getElementById("editor");if(!ed||!state.findText)return;
-  if(dir) state.findDirection=dir;
-  const direction=state.findDirection||'down';
+// 에디터의 글자를 이어 붙여 검색어가 나오는 위치를 모두 찾는다.
+// 굵게 등으로 글자가 여러 조각(텍스트 노드)에 나뉘어 있어도 찾을 수 있다.
+function collectFindMatches(ed){
   const walker=document.createTreeWalker(ed,NodeFilter.SHOW_TEXT);
   const nodes=[];let nd;
   while(nd=walker.nextNode()) nodes.push(nd);
@@ -978,6 +977,14 @@ function handleFind(dir){
     const idx=fullText.indexOf(state.findText,i);if(idx===-1)break;
     matches.push(idx);i=idx+1;
   }
+  return {nodes,offsets,fullText,matches};
+}
+
+function handleFind(dir){
+  const ed=document.getElementById("editor");if(!ed||!state.findText)return;
+  if(dir) state.findDirection=dir;
+  const direction=state.findDirection||'down';
+  const {nodes,offsets,matches}=collectFindMatches(ed);
   const countEl=document.getElementById("findCount");
   if(!matches.length){if(countEl)countEl.textContent="없음";state.findIndex=-1;findMatchStart=null;findMatchEnd=null;clearFindHighlight();return;}
   if(direction==='down'){
@@ -1011,6 +1018,63 @@ function handleFind(dir){
   }
   if(countEl) countEl.textContent=`${state.findIndex+1} / ${matches.length}`;
 }
+// 하나씩 바꾸기. 지금 찾아 표시된 곳 하나만 바꾸고 다음 곳으로 넘어간다.
+// 아직 찾은 곳이 없으면(처음 누른 경우) 바꾸지 않고 먼저 찾아서 보여 준다.
+// 무엇이 바뀔지 눈으로 보지 않은 채 바뀌는 일이 없게 하기 위해서다.
+function replaceOne(){
+  const ed=document.getElementById("editor");
+  if(!ed||!state.findText)return;
+  const {nodes,offsets,fullText,matches}=collectFindMatches(ed);
+  const ms=findMatchStart,me=findMatchEnd;
+  // 찾은 뒤에 본문을 고쳤으면 기억해 둔 위치가 틀어졌을 수 있다. 그 자리의 글자가
+  // 여전히 검색어와 같을 때만 바꾼다.
+  const valid=ms!=null&&me!=null&&fullText.slice(ms,me)===state.findText;
+  if(!valid){handleFind("down");return;}
+
+  // 글자 조각(텍스트 노드) 단위로 고친다. innerHTML 을 통째로 바꾸지 않으므로
+  // 굵게·형광펜·글자색 같은 서식이 그대로 남는다. 바뀐 글자는 찾은 곳의 첫
+  // 글자와 같은 서식을 따른다.
+  let first=-1,last=-1;
+  for(let i=0;i<nodes.length;i++){
+    const s=offsets[i],e=s+nodes[i].textContent.length;
+    if(first===-1&&ms>=s&&ms<e) first=i;
+    if(me>s&&me<=e){last=i;break;}
+  }
+  if(first===-1||last===-1){handleFind("down");return;}
+  const rep=state.replaceText||"";
+  if(first===last){
+    const v=nodes[first].nodeValue,s=offsets[first];
+    nodes[first].nodeValue=v.slice(0,ms-s)+rep+v.slice(me-s);
+  }else{
+    // 검색어가 여러 조각에 걸쳐 있으면(예: <b>12</b>화) 첫 조각에 바꾼 글자를
+    // 넣고, 나머지 조각에서는 검색어에 해당하는 부분만 지운다.
+    nodes[first].nodeValue=nodes[first].nodeValue.slice(0,ms-offsets[first])+rep;
+    for(let i=first+1;i<last;i++) nodes[i].nodeValue="";
+    nodes[last].nodeValue=nodes[last].nodeValue.slice(me-offsets[last]);
+  }
+  for(let i=first;i<=last;i++) if(i!==first&&nodes[i].nodeValue==="") nodes[i].remove();
+
+  handleTextChange();          // 저장 예약 · 되돌리기(Ctrl+Z) 이력에 들어간다
+
+  // 다음 곳으로. 바꾼 글자 바로 뒤부터 찾는다. 바꿀 말 안에 검색어가 들어 있어도
+  // (예: "화" -> "화요일") 방금 바꾼 곳을 다시 잡지 않는다.
+  const after=ms+rep.length;
+  const next=collectFindMatches(ed).matches;
+  const k=next.findIndex(p=>p>=after);
+  state.findIndex=(k===-1?-1:k-1);     // handleFind("down") 이 하나 늘려서 k 가 된다. 없으면 처음으로 돌아간다
+  findMatchStart=null;findMatchEnd=null;
+  replacedInRun++;
+  if(!next.length){
+    clearFindHighlight();
+    const cnt=document.getElementById("findCount");
+    if(cnt)cnt.textContent=`${replacedInRun}개 바꿈 · 더 없음`;
+    state.findIndex=-1;
+    return;
+  }
+  handleFind("down");
+}
+let replacedInRun=0;   // 이번 찾기에서 하나씩 바꾼 개수 (검색어가 바뀌면 0 으로)
+
 async function handleReplace(){
   const file=state.files.find(f=>f.id===state.activeTab);if(!file||!state.findText)return;
   let newHTML,count=0;
@@ -2199,6 +2263,8 @@ function render(){
             <button onclick="window._findDir('up')"   title="이전 찾기 (Shift+Enter)" style="${actC(t)};padding:3px 7px;">▲</button>
             <button onclick="window._findDir('down')" title="다음 찾기 (Enter)"       style="${actC(t)};padding:3px 7px;">▼</button>
             <input value="${esc(state.replaceText)}" placeholder="바꾸기..." oninput="window._fi(this.value,'replace')" onkeydown="if(event.key==='Enter')window._btn('replace_exec')" style="${inpC(t)};width:150px;"/>
+            <button onclick="window._replOne()" title="지금 표시된 곳 하나만 바꾸고 다음으로" style="${actC(t)}">바꾸기</button>
+            <button onclick="window._findDir('down')" title="바꾸지 않고 다음으로" style="${actC(t)}">건너뛰기</button>
             <button onclick="window._btn('replace_exec')" style="${actC(t)}">모두 바꾸기</button>
             <button onclick="window._btn('find')" style="${actC(t)};color:#f87171;margin-left:auto;">✕</button>          </div>`:""}
 
@@ -2337,7 +2403,7 @@ function render(){
     else if(a==="find")          {
       const st=document.getElementById("editor")?.scrollTop||0;
       const opening=!state.findOpen;
-      if(opening){findMatchStart=null;findMatchEnd=null;}   // 지난 검색의 낡은 위치가 재사용되지 않게
+      if(opening){findMatchStart=null;findMatchEnd=null;replacedInRun=0;}   // 지난 검색의 낡은 위치가 재사용되지 않게
       state.findOpen=opening;render();
       if(opening)setTimeout(()=>document.getElementById("findInput")?.focus(),50);
       else landCaretAtLastMatch(st);
@@ -2394,7 +2460,7 @@ function render(){
     if(w==="find"){
       // 검색어가 바뀌면 이전 검색에서 찾았던 위치는 더 이상 이 글자와 무관하다.
       // 놔두면 Enter 없이 바로 닫았을 때 엉뚱한 곳에 커서가 꽂힌다.
-      if(v!==state.findText){state.findIndex=-1;findMatchStart=null;findMatchEnd=null;clearFindHighlight();}
+      if(v!==state.findText){state.findIndex=-1;findMatchStart=null;findMatchEnd=null;clearFindHighlight();replacedInRun=0;}
       state.findText=v;
     } else state.replaceText=v;
   };
@@ -2554,6 +2620,7 @@ function render(){
   window._rfc=(id)=>commitFolderRename(id);
   window._rfEsc=()=>{state.renamingFolderId=null;state.renamingFolderVal="";render();};
   window._findDir=(dir)=>handleFind(dir);
+  window._replOne=()=>replaceOne();
   window._changeColor=(id,color)=>changeFolderColor(id,color);
   window._paste=(e)=>{
     e.preventDefault();
@@ -2647,7 +2714,7 @@ window.addEventListener("keydown",(e)=>{
     e.preventDefault();
     const st=document.getElementById("editor")?.scrollTop||0;
     const opening=!state.findOpen;
-    if(opening){findMatchStart=null;findMatchEnd=null;}
+    if(opening){findMatchStart=null;findMatchEnd=null;replacedInRun=0;}
     state.findOpen=opening;render();
     if(opening)setTimeout(()=>document.getElementById("findInput")?.focus(),50);
     else landCaretAtLastMatch(st);
