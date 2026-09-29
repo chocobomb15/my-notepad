@@ -2094,6 +2094,7 @@ function renderFolderTree(parentId,depth){
 }
 
 // ─── Render ──────────────────
+let renderedTab=null;   // 지금 화면의 에디터가 보여 주고 있는 문서 (같은 문서를 다시 그릴 때 스크롤 유지용)
 function render(){
   const t=T();
   const fontFamily=FONTS[state.font]||FONTS.nanum;
@@ -2132,6 +2133,12 @@ function render(){
   // 다시 그려지면서 맨 앞으로 튀어, 옆 버튼을 쓰려면 매번 다시 밀어야 했다.
   const headerLeft=document.getElementById("headerBar")?.scrollLeft||0;
   const fmtLeft   =document.getElementById("fmtBar")?.scrollLeft||0;
+  // 본문도 같다. 같은 문서를 다시 그리는 것뿐인데(중요 표시·이름 바꾸기·우클릭
+  // 메뉴·다크모드 등) 에디터가 새로 만들어지면서 맨 위로 튀었다.
+  // 다른 문서로 넘어가는 경우는 openFile·탭 클릭이 그 문서의 자리를 따로 되돌리므로
+  // 여기서는 같은 문서일 때만 잡아 둔다.
+  const prevEd=document.getElementById("editor");
+  const editorTop=(prevEd&&renderedTab===state.activeTab)?prevEd.scrollTop:null;
 
   document.body.innerHTML=`
   <div style="display:flex;flex-direction:column;height:100vh;overflow:hidden;font-family:${fontFamily};">
@@ -2356,7 +2363,14 @@ function render(){
   const fbEl=document.getElementById("fmtBar");
   if(fbEl&&fmtLeft) fbEl.scrollLeft=fmtLeft;
 
-  if(activeFile){const ed=document.getElementById("editor");if(ed)ed.innerHTML=textToHTML(activeFile.content);}
+  if(activeFile){
+    const ed=document.getElementById("editor");
+    if(ed){
+      ed.innerHTML=textToHTML(activeFile.content);
+      if(editorTop) ed.scrollTop=editorTop;    // 내용을 넣은 뒤에야 그 높이까지 내려갈 수 있다
+    }
+  }
+  renderedTab=state.activeTab;
   // 문서를 처음 열면 되돌리기 이력의 출발점을 잡아둔다.
   if(activeFile&&!undoHist.has(activeFile.id)) undoInit(activeFile.id,textToHTML(activeFile.content));
   updateUndoButtons();
