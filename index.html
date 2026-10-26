@@ -347,9 +347,8 @@ function isHTML(s){return /<(strong|em|b|i|s|del|div|br|p|u|span|mark)\b/i.test(
 // ─── 붙여넣기 서식 추려내기 ───
 // 워드·웹에서 복사한 HTML 을 그대로 넣으면 <span style> · <font> 같은 것이
 // 딸려와 문서가 크게 부풀고(문서당 1 MiB 상한), 이 앱의 변환기가 다루지
-// 못하는 태그가 섞인다. 이 원고가 지금까지 써온 여섯 가지
-// (b i u strike div br) 로만 추려서 넣는다.
-const PASTE_INLINE={B:"b",STRONG:"b",I:"i",EM:"i",U:"u",INS:"u",S:"strike",STRIKE:"strike",DEL:"strike"};
+// 못하는 태그가 섞인다. 이 원고가 써 온 것(b i u strike div br, 형광펜·글자색 span)
+// 으로만 추려서 넣는다.
 const PASTE_BLOCK=/^(DIV|P|LI|TR|H[1-6]|BLOCKQUOTE|PRE|SECTION|ARTICLE|UL|OL|TABLE|TBODY|THEAD)$/;
 const PASTE_DROP="script,style,head,meta,link,noscript,img,svg,video,audio,iframe,object,embed,input,button,select,textarea";
 
@@ -407,7 +406,7 @@ function readTextColor(style){
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function sanitizePasteHTML(html){
+function sanitizePasteHTML(html,opts={}){
   const dom=new DOMParser().parseFromString(`<div id="r">${html}</div>`,"text/html");
   const root=dom.getElementById("r");
   if(!root) return null;
@@ -420,38 +419,48 @@ function sanitizePasteHTML(html){
     lines.push(curTrailFromSource?cur.replace(/ +$/,""):cur);
     cur="";curTrailFromSource=false;
   };
-  // 워드·구글독스는 <b> 대신 <span style="font-weight:700"> 을 쓴다.
-  // 태그 이름만 보면 굵게가 통째로 사라지므로 style 도 함께 본다.
-  const inlineFromStyle=el=>{
-    const s=(el.getAttribute&&el.getAttribute("style")||"").toLowerCase();
-    if(!s)return [];
-    const tags=[];
-    if(/font-weight\s*:\s*(bold|[6-9]00)/.test(s))tags.push("b");
-    if(/font-style\s*:\s*italic/.test(s))tags.push("i");
-    if(/text-decoration[^;]*underline/.test(s))tags.push("u");
-    if(/text-decoration[^;]*line-through/.test(s))tags.push("strike");
-    const hl=readHighlight(s);
-    if(hl)tags.push("hl:"+hl);
-    const fc=readTextColor(s);
-    if(fc)tags.push("fc:"+fc);
-    return tags;
+  // 서식은 "지금 상태" 로 따진다. 바깥 요소가 켠 서식을 안쪽 요소가 끌 수 있어야 한다.
+  // 예전에는 켜는 것만 쌓아서, 바깥에 한 번 걸린 서식이 안쪽 전체로 번졌다.
+  // 대표적인 경우가 구글 문서다. 복사한 내용 전체를 <b style="font-weight:normal">
+  // 로 감싸 보내는데, <b> 만 보고 전체를 굵게 만들었다(첫 단어만 굵은 글이 통째로
+  // 굵어졌다). 블록(div·p) 에 걸린 서식도 예전에는 아예 읽지 않았다.
+  // 실제 CSS 규칙을 따른다:
+  //  - 굵게·기울임·글자색은 물려받고, 안쪽에서 명시하면 그 값으로 바뀐다(꺼짐 포함).
+  //  - 밑줄·취소선은 안쪽에서 없앨 수 없다(CSS 에서도 그렇다).
+  //  - 형광펜(배경)은 안쪽이 자기 색을 가지면 그 색, 아니면 바깥 색이 비쳐 보인다.
+  const styleOf=(el,parent)=>{
+    const st={...parent};
+    const tag=el.tagName;
+    if(tag==="B"||tag==="STRONG") st.b=true;
+    if(tag==="I"||tag==="EM") st.i=true;
+    if(tag==="U"||tag==="INS") st.u=true;
+    if(tag==="S"||tag==="STRIKE"||tag==="DEL") st.s=true;
+    const css=(el.getAttribute&&el.getAttribute("style")||"").toLowerCase();
+    if(css){
+      const val=re=>{const m=css.match(re);return m?m[1].replace(/!important/,"").replace(/["']/g,"").trim():null;};
+      const fw=val(/font-weight\s*:\s*([^;]+)/);
+      if(fw!=null){ if(/^(bold|bolder|[6-9]00)$/.test(fw)) st.b=true; else if(/^(normal|lighter|[1-5]00)$/.test(fw)) st.b=false; }
+      const fs=val(/font-style\s*:\s*([^;]+)/);
+      if(fs!=null){ if(/italic|oblique/.test(fs)) st.i=true; else if(fs==="normal") st.i=false; }
+      if(/text-decoration[^;]*underline/.test(css)) st.u=true;
+      if(/text-decoration[^;]*line-through/.test(css)) st.s=true;
+      const hl=readHighlight(css); if(hl) st.hl=hl;
+      // 글자색을 명시했으면 그 값을 따른다. 버리는 색(검정·흰색 같은 본문색)이면
+      // "색 없음" 으로 되돌린다 — 바깥의 빨강이 안쪽 검정 글자까지 물들이지 않게.
+      if(/(?:^|;)\s*color\s*:/.test(css)) st.fc=readTextColor(css);
+    }
+    return st;
   };
   const escT=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  const isStyleTag=t=>t.startsWith("hl:")||t.startsWith("fc:");
-  const openTag=t=>t.startsWith("hl:")?`<span style="background-color: ${t.slice(3)};">`
-                 :t.startsWith("fc:")?`<span style="color: ${t.slice(3)};">`:`<${t}>`;
-  const closeTag=t=>isStyleTag(t)?"</span>":`</${t}>`;
-  const wrap=(text,tags)=>{
-    if(!tags.length)return text;
-    // 형광펜과 글자색은 각각 하나만 남긴다. 겹쳐 오면 안쪽(나중) 것이 실제로
-    // 보이는 색이므로 그것으로 덮어쓴다.
-    const seen=new Map(),u=[];
-    for(const t of tags){
-      const key=isStyleTag(t)?t.slice(0,2):t;
-      if(seen.has(key)){ if(isStyleTag(t)) u[seen.get(key)]=t; continue; }
-      seen.set(key,u.length);u.push(t);
-    }
-    return u.map(openTag).join("")+text+u.slice().reverse().map(closeTag).join("");
+  const wrap=(text,st)=>{
+    let h=text;
+    if(st.fc) h=`<span style="color: ${st.fc};">${h}</span>`;
+    if(st.hl) h=`<span style="background-color: ${st.hl};">${h}</span>`;
+    if(st.s)  h=`<strike>${h}</strike>`;
+    if(st.u)  h=`<u>${h}</u>`;
+    if(st.i)  h=`<i>${h}</i>`;
+    if(st.b)  h=`<b>${h}</b>`;
+    return h;
   };
 
   (function walk(node,open){
@@ -475,24 +484,59 @@ function sanitizePasteHTML(html){
       const tag=n.tagName;
       if(tag==="BR"){flush();continue;}
       // 굵게 위에 형광펜을 칠하면 브라우저가 <b style="background-color:..."> 를
-      // 만든다. 태그 이름만 보면 그 형광펜이 사라지므로 style 도 함께 읽는다.
-      const inline=PASTE_INLINE[tag];
-      if(inline){walk(n,[...open,inline,...inlineFromStyle(n)]);continue;}
+      // 만든다. 태그 이름과 style 을 함께 읽는다(styleOf).
       if(PASTE_BLOCK.test(tag)){
         if(cur.trim()!=="")flush(); else cur="";
-        walk(n,open);
+        walk(n,styleOf(n,open));
         if(cur.trim()!=="")flush(); else cur="";
         continue;
       }
-      walk(n,[...open,...inlineFromStyle(n)]);   // 모르는 태그는 벗기되 style 의 서식은 살린다
+      walk(n,styleOf(n,open));   // 모르는 태그는 벗기되 style 의 서식은 살린다
     }
-  })(root,[]);
+  })(root,{b:false,i:false,u:false,s:false,hl:null,fc:null});
   if(cur.trim()!=="")flush();
 
-  while(lines.length&&!lines[0].trim())lines.shift();
-  while(lines.length&&!lines[lines.length-1].trim())lines.pop();
+  // 붙여넣을 때는 앞뒤 빈 줄을 버린다. 복사할 때는(keepEdges) 고른 그대로 둔다.
+  if(!opts.keepEdges){
+    while(lines.length&&!lines[0].trim())lines.shift();
+    while(lines.length&&!lines[lines.length-1].trim())lines.pop();
+  }
   if(!lines.length) return null;
   return lines.map(l=>`<div>${l||"<br>"}</div>`).join("");
+}
+
+// ─── 복사하기 ─────────────────
+// 브라우저에 맡기면 화면의 글꼴·크기·테마 색까지 글자마다 실어 보낸다. 실험해 보니
+// 다크모드에서 복사하면 글자마다 "거의 흰 글자색 + 거의 검은 배경" 이 붙어 나가,
+// 워드·한글에 붙이면 검은 상자에 흰 글씨가 되고 흰 바탕에서는 글자가 안 보인다.
+// 라이트모드에서도 글자마다 흰 배경이 따라간다.
+// 원고의 서식(굵게·기울임·밑줄·취소선·형광펜·글자색)만 담아 직접 보낸다.
+// 글꼴과 크기는 붙여넣는 곳의 것을 따른다.
+function selectionClipboard(ed){
+  const sel=window.getSelection();
+  if(!sel||!sel.rangeCount)return null;
+  const r=sel.getRangeAt(0);
+  if(r.collapsed||!ed.contains(r.commonAncestorContainer))return null;
+  // 선택이 한 서식 안에 통째로 들어 있으면(예: 굵은 단어의 일부) cloneContents 는
+  // 글자만 돌려줘서 그 서식이 사라진다. 바깥 서식 요소를 되살려 감싼다.
+  let frag=r.cloneContents();
+  let anc=r.commonAncestorContainer;
+  if(anc.nodeType===3) anc=anc.parentNode;
+  while(anc&&anc!==ed){
+    if(!LINE_BLOCK.test(anc.tagName||"")){
+      const w=anc.cloneNode(false);w.appendChild(frag);
+      frag=document.createDocumentFragment();frag.appendChild(w);
+    }
+    anc=anc.parentNode;
+  }
+  const box=document.createElement("div");box.appendChild(frag);
+  const html=sanitizePasteHTML(box.innerHTML,{keepEdges:true});
+  if(!html)return null;
+  // 글자만 받는 곳(카톡·메모장 등)을 위해 줄 단위로 맞춘 글자도 함께 담는다.
+  // Range.toString() 은 줄(div) 경계에 줄바꿈을 넣지 않으므로 쓰지 않는다.
+  const tmp=document.createElement("div");tmp.innerHTML=html;
+  const text=[...tmp.children].map(d=>d.textContent).join("\n");
+  return {html,text};
 }
 function htmlToMarkdown(html){
   let md=html;
@@ -2279,6 +2323,7 @@ function render(){
         ${activeFile
           ?`<div id="editor" contenteditable="true"
               oninput="window._tc()" onkeydown="window._kd(event)" onpaste="window._paste(event)"
+              oncopy="window._copy(event,false)" oncut="window._copy(event,true)"
               spellcheck="false"
               style="flex:1;background:${t.bg};color:${state.dark?t.tx:"#000000"};border:none;outline:none;overflow-y:auto;
                 padding:20px 28px;font-size:${Math.round(14*state.zoom/100)}px;line-height:1.85;
@@ -2636,6 +2681,16 @@ function render(){
   window._findDir=(dir)=>handleFind(dir);
   window._replOne=()=>replaceOne();
   window._changeColor=(id,color)=>changeFolderColor(id,color);
+  window._copy=(e,cut)=>{
+    const ed=document.getElementById("editor");if(!ed)return;
+    let clip=null;
+    try{ clip=selectionClipboard(ed); }catch(err){ clip=null; }
+    if(!clip)return;                 // 만들지 못하면 브라우저 기본 복사에 맡긴다
+    e.preventDefault();
+    e.clipboardData.setData("text/html",clip.html);
+    e.clipboardData.setData("text/plain",clip.text);
+    if(cut){ document.execCommand("delete"); handleTextChange(); }
+  };
   window._paste=(e)=>{
     e.preventDefault();
     const cb=e.clipboardData;
