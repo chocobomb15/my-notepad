@@ -716,7 +716,11 @@ function selectionClipboard(ed){
     anc=anc.parentNode;
   }
   const box=document.createElement("div");box.appendChild(frag);
-  const html=sanitizePasteHTML(box.innerHTML,{keepEdges:true});
+  // 편집기는 white-space: pre-wrap(줄 바꿈 끄면 pre) 이라 줄바꿈 문자가 그대로 줄로 보인다.
+  // 이 원고는 실제로 줄마다 끝에 ⏎ 가 붙고, 빈 줄이 <div>⏎</div> 로 저장돼 있다(문서
+  // 전체에 약 2만 3천 개). 복사할 때도 화면과 같은 규칙으로 읽어야 한다. 예전에는 이것을
+  // HTML 정리용 공백으로 보고 버려서, 이 앱 안에서 복사하면 빈 줄이 사라졌다.
+  const html=sanitizePasteHTML(`<div style="white-space: pre-wrap;">${box.innerHTML}</div>`,{keepEdges:true});
   if(!html)return null;
   // 글자만 받는 곳(카톡·메모장 등)을 위해 줄 단위로 맞춘 글자도 함께 담는다.
   // Range.toString() 은 줄(div) 경계에 줄바꿈을 넣지 않으므로 쓰지 않는다.
