@@ -589,6 +589,83 @@ function pasteSimilarText(html,text){
   const [lo,hi]=a.length<b.length?[a,b]:[b,a];
   return hi.includes(lo)&&lo.length/hi.length>=0.9;
 }
+// 서식은 HTML 에서, 줄 나눔은 글자판에서 가져와 합친다.
+// Gemini 처럼 HTML 에 문단 안 줄바꿈 정보가 아예 없으면 HTML 만으로는 줄을 되살릴 수
+// 없다. 그렇다고 글자판만 쓰면 굵게 같은 서식이 빠진다. 두 쪽의 글자(한글·영문·숫자)
+// 를 한 자씩 맞춰 보고, 글자판에서 줄이 바뀌는 자리에 HTML 글을 끊어 넣는다.
+// 글자 순서가 한 자라도 다르면 맞출 수 없으므로 null 을 돌려준다(그때는 글자판으로).
+function pasteMergeLines(html,text){
+  const sig=c=>/[\p{L}\p{N}]/u.test(c);
+  // 1) HTML 을 글자 하나하나와 그 글자를 감싼 서식 태그 목록으로 푼다
+  const box=document.createElement("div");box.innerHTML=html||"";
+  const chars=[];
+  const walker=document.createTreeWalker(box,NodeFilter.SHOW_TEXT);
+  let nd;
+  while(nd=walker.nextNode()){
+    const chain=[];
+    for(let p=nd.parentNode;p&&p!==box&&p.tagName!=="DIV";p=p.parentNode) chain.unshift(p);
+    const tags=chain.map(el=>{
+      const name=el.tagName.toLowerCase(),st=el.getAttribute("style");
+      return {open:`<${name}${st?` style="${st.replace(/"/g,"&quot;")}"`:""}>`,close:`</${name}>`};
+    });
+    const key=tags.map(t=>t.open).join("");
+    for(const c of nd.nodeValue.normalize("NFC")) chars.push({c,tags,key});
+  }
+  const plainArr=[...String(text||"").replace(/\r\n?/g,"\n").normalize("NFC")];
+  const hSig=[],pSig=[];
+  chars.forEach((x,i)=>{if(sig(x.c))hSig.push(i);});
+  plainArr.forEach((c,i)=>{if(sig(c))pSig.push(i);});
+  if(!hSig.length||hSig.length!==pSig.length)return null;
+  for(let k=0;k<hSig.length;k++) if(chars[hSig[k]].c!==plainArr[pSig[k]])return null;
+
+  // 2) 글자판의 줄 나눔을 따라 줄을 만든다
+  const lines=[[]];
+  const push=x=>lines[lines.length-1].push(x);
+  const trimEndLine=()=>{const l=lines[lines.length-1];while(l.length&&/\s/.test(l[l.length-1].c))l.pop();};
+  // 마크다운 기호(** # 등)는 글자판에만 있으므로 세지 않는다
+  const countNonWs=s=>[...s.replace(/[*_~`#>\\]/g,"")].filter(c=>!/\s/.test(c)).length;
+  for(let i=0;i<hSig[0];i++) push(chars[i]);
+  for(let k=0;k<hSig.length;k++){
+    push(chars[hSig[k]]);
+    if(k===hSig.length-1){ for(let i=hSig[k]+1;i<chars.length;i++) push(chars[i]); break; }
+    const hGap=chars.slice(hSig[k]+1,hSig[k+1]);                 // 두 글자 사이의 HTML 문장부호·공백
+    const pGap=plainArr.slice(pSig[k]+1,pSig[k+1]).join("");    // 같은 자리의 글자판
+    const runs=pGap.match(/\n+/g);
+    if(!runs){ hGap.forEach(push); continue; }
+    // 글자판의 틈을 줄바꿈으로 나눈 조각마다, 그 조각의 기호 개수만큼 HTML 쪽 기호를 배분한다.
+    // (예: 앞 줄 끝의 "." 은 앞 줄에, 다음 줄 첫 “ 는 다음 줄에, 가운데 "---" 는 그 줄에)
+    const segs=pGap.split(/\n+/);
+    let pos=0;
+    for(let si=0;si<segs.length;si++){
+      if(si>0){
+        while(pos<hGap.length&&/\s/.test(hGap[pos].c)) pos++;          // 줄 앞 공백은 버리고
+        const indent=(segs[si].match(/^[ \t]+/)||[""])[0].replace(/\t/g,"    ");
+        for(const c of indent) push({c,tags:[],key:""});            // 글자판의 들여쓰기는 살린다
+      }
+      if(si===segs.length-1){ while(pos<hGap.length) push(hGap[pos++]); break; }
+      let want=countNonWs(segs[si]),seen=0;
+      while(pos<hGap.length&&seen<want){ if(!/\s/.test(hGap[pos].c))seen++; push(hGap[pos++]); }
+      trimEndLine();
+      for(let j=0;j<runs[si].length;j++) lines.push([]);
+    }
+  }
+  // 3) 다시 HTML 로. 같은 서식이 이어지는 글자는 한 덩어리로 감싼다.
+  const escT=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const out=lines.map(line=>{
+    if(!line.some(x=>x.c.trim()))return "<div><br></div>";
+    let h="",i=0;
+    while(i<line.length){
+      let j=i;while(j<line.length&&line[j].key===line[i].key)j++;
+      const t=line[i].tags;
+      h+=t.map(x=>x.open).join("")+escT(line.slice(i,j).map(x=>x.c).join(""))+t.slice().reverse().map(x=>x.close).join("");
+      i=j;
+    }
+    return `<div>${h}</div>`;
+  }).join("");
+  // 줄 수가 글자판과 맞을 때만 믿는다
+  return pasteLineCountHTML(out)===pasteLineCountText(text)?out:null;
+}
+
 function pasteFixLines(raw,html,text){
   if(!html||!text)return {html,plainOnly:false};
   const want=pasteLineCountText(text);
@@ -603,8 +680,14 @@ function pasteFixLines(raw,html,text){
   if(alt&&altN>have&&altN<=want){
     if(altN===want||!pasteSimilarText(alt,text))return {html:alt,plainOnly:false};
   }
-  // 2) 그래도 안 맞으면 글자판으로 붙인다(내용이 거의 같을 때만). 서식은 빠진다.
-  if(pasteSimilarText(html,text))return {html:null,plainOnly:true};
+  // 2) 그래도 안 맞으면 줄은 글자판에서, 서식은 HTML 에서 가져와 합친다.
+  //    글자가 한 자라도 어긋나 합칠 수 없을 때만 글자판으로 붙인다 — 이때만 서식이 빠진다.
+  if(pasteSimilarText(html,text)){
+    let merged=null;
+    try{ merged=pasteMergeLines(html,text); }catch(e){ merged=null; }
+    if(merged)return {html:merged,plainOnly:false};
+    return {html:null,plainOnly:true};
+  }
   return {html,plainOnly:false};
 }
 
